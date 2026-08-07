@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	kitenv "github.com/starcat-app/starcat-api-kit/env"
 	"github.com/starcat-app/starcat-recommend-api/internal/handler"
 	"github.com/starcat-app/starcat-recommend-api/internal/middleware"
 	"github.com/starcat-app/starcat-recommend-api/internal/provider"
@@ -51,22 +52,22 @@ func DefaultPort() string { return defaultPort }
 
 // FromEnv 从环境变量装配服务（与历史 cmd/server 行为一致）。
 func FromEnv() (*Service, error) {
-	apiKeys, err := requiredListEnv("API_KEYS")
+	apiKeys, err := kitenv.RequiredCSV("API_KEYS")
 	if err != nil {
 		return nil, err
 	}
-	simRepoAPIKey, err := lookupRequiredEnv("SIMREPO_API_KEY")
+	simRepoAPIKey, err := kitenv.LookupRequired("SIMREPO_API_KEY")
 	if err != nil {
 		return nil, err
 	}
 	opt := Options{
-		Port:            envOrDefault("PORT", defaultPort),
+		Port:            kitenv.OrDefault("PORT", defaultPort),
 		APIKeys:         apiKeys,
 		SimRepoAPIKey:   simRepoAPIKey,
-		SimRepoEndpoint: envOrDefault("SIMREPO_ENDPOINT", defaultSimRepoEndpoint),
-		CacheTTLSuccess: durationEnv("CACHE_TTL_SUCCESS_SECONDS", 7*24*time.Hour),
-		CacheTTLEmpty:   durationEnv("CACHE_TTL_EMPTY_SECONDS", time.Hour),
-		CacheTTLError:   durationEnv("CACHE_TTL_ERROR_SECONDS", 10*time.Minute),
+		SimRepoEndpoint: kitenv.OrDefault("SIMREPO_ENDPOINT", defaultSimRepoEndpoint),
+		CacheTTLSuccess: kitenv.DurationSeconds("CACHE_TTL_SUCCESS_SECONDS", 7*24*time.Hour),
+		CacheTTLEmpty:   kitenv.DurationSeconds("CACHE_TTL_EMPTY_SECONDS", time.Hour),
+		CacheTTLError:   kitenv.DurationSeconds("CACHE_TTL_ERROR_SECONDS", 10*time.Minute),
 	}
 	return New(opt)
 }
