@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # workflow_run 默认会 checkout 当前 main，必须固定到已通过 CI 的准确提交。
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
