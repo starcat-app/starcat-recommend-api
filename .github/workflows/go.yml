@@ -51,6 +51,10 @@ jobs:
       - name: Run go vet
         run: go vet ./...
 
+      # 宿主机编译不会应用 .dockerignore；必须构建真实镜像上下文，避免遗漏源码目录。
+      - name: Build Docker image
+        run: docker build --build-arg VERSION=0.0.0-ci --tag starcat-recommend-api:ci .
+
       - name: Build
         run: go build -v -o starcat-recommend-api ./cmd/server/
 
