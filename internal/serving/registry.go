@@ -217,7 +217,7 @@ func VerifyBundle(directory string, expectedVersion string) (Manifest, error) {
 	}
 	for _, name := range []string{manifestFile, databaseFile} {
 		want, ok := checksums[name]
-		if !ok || len(want) != 64 {
+		if !ok || len(want) != len("sha256:")+64 || !strings.HasPrefix(want, "sha256:") {
 			return Manifest{}, fmt.Errorf("%w: missing checksum for %s", ErrInvalidBundle, name)
 		}
 		got, err := sha256File(filepath.Join(directory, name))
@@ -392,5 +392,5 @@ func sha256File(path string) (string, error) {
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }

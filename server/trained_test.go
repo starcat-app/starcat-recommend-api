@@ -120,7 +120,7 @@ func TestBundleRejectsChecksumMismatchWithoutChangingActive(t *testing.T) {
 	assertStatus(t, response, http.StatusOK)
 	response.Body.Close()
 
-	invalid := buildBundleZipWithManifestChecksum(t, "costar-bad-v2", stringsOf('0', 64))
+	invalid := buildBundleZipWithManifestChecksum(t, "costar-bad-v2", "sha256:"+stringsOf('0', 64))
 	response = request(t, server.URL, http.MethodPost, "/internal/v1/model-bundles/costar-bad-v2?activate=true", trainedAdminKey, invalid, "application/zip")
 	assertStatus(t, response, http.StatusUnprocessableEntity)
 	response.Body.Close()
@@ -281,7 +281,7 @@ func checksumFile(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func stringsOf(value byte, count int) string {
