@@ -60,7 +60,7 @@ brew install --cask starcat
 
 Backend service for Starcat similar-repository recommendations.
 
-The initial version proxies SimRepo's unofficial Qdrant Recommend API through the server, providing the Starcat macOS client with a stable `/api/v1/repos/{repo_id}/recommendations` contract. The client neither connects directly to SimRepo nor stores a SimRepo key. The provider can later be replaced within this service by Starcat's own recommendation provider.
+This service is Starcat's long-term recommendation entry point. `/api/v1` keeps the existing SimRepo-backed contract, while `/api/v2` reads immutable ServingBundles published by `starcat-recsys-trainer`. Clients hold neither the SimRepo key nor the model publishing key.
 
 ## Endpoints
 
@@ -69,6 +69,10 @@ The initial version proxies SimRepo's unofficial Qdrant Recommend API through th
 | `GET` | `/healthz` | No | Process health check |
 | `GET` | `/api/v1/ping` | Yes | Starcat client connectivity probe |
 | `GET` | `/api/v1/repos/{repo_id}/recommendations?limit=10&offset=0` | Yes | Similar repository recommendations |
+| `GET` | `/api/v2/repos/{repo_id}/recommendations?limit=10&offset=0` | Client key | Self-trained single-repository recommendations |
+| `POST` | `/api/v2/recommendations/query` | Client key | Self-trained multi-seed recommendations |
+| `POST` | `/internal/v1/model-bundles/{model_version}?activate=true` | Publish key | Publish and activate a ServingBundle |
+| `GET` | `/internal/v1/model-bundles/active` | Publish key | Read the active model version |
 
 The authenticated ping response includes the service identity and the build version injected from the release tag:
 
@@ -94,6 +98,9 @@ Optional:
 - `CACHE_TTL_SUCCESS_SECONDS`: defaults to 7 days.
 - `CACHE_TTL_EMPTY_SECONDS`: defaults to 1 hour.
 - `CACHE_TTL_ERROR_SECONDS`: defaults to 10 minutes.
+- `MODEL_PUBLISH_KEYS`: comma-separated Trainer publishing keys. Internal publish routes are disabled when omitted.
+- `MODEL_REGISTRY_DIR`: immutable Bundle registry, defaults to `./data/model-registry`.
+- `MAX_BUNDLE_BYTES`: compressed Bundle limit, defaults to 512 MiB.
 
 ## Local Development
 
@@ -126,6 +133,7 @@ The current provider chain is:
 
 ```text
 RecommendHandler -> CachedProvider -> SimRepoProvider -> SimRepo Qdrant API
+TrainedRecommendHandler -> TrainedProvider -> active ServingBundle SQLite
 ```
 
 `CachedProvider` keeps at most 10,000 `repoID:limit:offset` entries. Expired entries are removed on read; when capacity is reached, the entry with the earliest expiry is evicted.

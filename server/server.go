@@ -17,12 +17,15 @@ import (
 	"github.com/starcat-app/starcat-recommend-api/internal/handler"
 	"github.com/starcat-app/starcat-recommend-api/internal/middleware"
 	"github.com/starcat-app/starcat-recommend-api/internal/provider"
+	"github.com/starcat-app/starcat-recommend-api/internal/serving"
 	"github.com/starcat-app/starcat-recommend-api/internal/version"
 )
 
 const (
 	defaultPort            = "5005"
 	defaultSimRepoEndpoint = "https://simrepo.dera.page/collections/repos/points/recommend"
+	defaultModelRegistry   = "./data/model-registry"
+	defaultMaxBundleBytes  = int64(512 << 20)
 )
 
 // Options 控制 recommend 服务装配。聚合网关可显式传入，单仓部署通常用 FromEnv。
@@ -34,14 +37,19 @@ type Options struct {
 	CacheTTLSuccess        time.Duration
 	CacheTTLEmpty          time.Duration
 	CacheTTLError          time.Duration
+	ModelRegistryDir       string
+	ModelPublishKeys       []string
+	MaxBundleBytes         int64
 	SkipListenLogEndpoints bool
 }
 
 // Service 是已装配的 recommend HTTP 服务。
 type Service struct {
-	opts     Options
-	handler  http.Handler
-	provider provider.Provider
+	opts                 Options
+	handler              http.Handler
+	provider             provider.Provider
+	registry             *serving.Registry
+	temporaryRegistryDir string
 }
 
 // Name 返回聚合网关识别用的稳定服务名。
@@ -61,13 +69,16 @@ func FromEnv() (*Service, error) {
 		return nil, err
 	}
 	opt := Options{
-		Port:            kitenv.OrDefault("PORT", defaultPort),
-		APIKeys:         apiKeys,
-		SimRepoAPIKey:   simRepoAPIKey,
-		SimRepoEndpoint: kitenv.OrDefault("SIMREPO_ENDPOINT", defaultSimRepoEndpoint),
-		CacheTTLSuccess: kitenv.DurationSeconds("CACHE_TTL_SUCCESS_SECONDS", 7*24*time.Hour),
-		CacheTTLEmpty:   kitenv.DurationSeconds("CACHE_TTL_EMPTY_SECONDS", time.Hour),
-		CacheTTLError:   kitenv.DurationSeconds("CACHE_TTL_ERROR_SECONDS", 10*time.Minute),
+		Port:             kitenv.OrDefault("PORT", defaultPort),
+		APIKeys:          apiKeys,
+		SimRepoAPIKey:    simRepoAPIKey,
+		SimRepoEndpoint:  kitenv.OrDefault("SIMREPO_ENDPOINT", defaultSimRepoEndpoint),
+		CacheTTLSuccess:  kitenv.DurationSeconds("CACHE_TTL_SUCCESS_SECONDS", 7*24*time.Hour),
+		CacheTTLEmpty:    kitenv.DurationSeconds("CACHE_TTL_EMPTY_SECONDS", time.Hour),
+		CacheTTLError:    kitenv.DurationSeconds("CACHE_TTL_ERROR_SECONDS", 10*time.Minute),
+		ModelRegistryDir: envOrDefault("MODEL_REGISTRY_DIR", defaultModelRegistry),
+		ModelPublishKeys: optionalListEnv("MODEL_PUBLISH_KEYS"),
+		MaxBundleBytes:   int64Env("MAX_BUNDLE_BYTES", defaultMaxBundleBytes),
 	}
 	return New(opt)
 }
@@ -95,6 +106,26 @@ func New(opt Options) (*Service, error) {
 	if opt.CacheTTLError <= 0 {
 		opt.CacheTTLError = 10 * time.Minute
 	}
+	registryDirectory := strings.TrimSpace(opt.ModelRegistryDir)
+	temporaryRegistryDirectory := ""
+	if registryDirectory == "" {
+		var err error
+		temporaryRegistryDirectory, err = os.MkdirTemp("", "starcat-recommend-models-")
+		if err != nil {
+			return nil, err
+		}
+		registryDirectory = temporaryRegistryDirectory
+	}
+	if opt.MaxBundleBytes <= 0 {
+		opt.MaxBundleBytes = defaultMaxBundleBytes
+	}
+	registry, err := serving.NewRegistry(registryDirectory)
+	if err != nil {
+		if temporaryRegistryDirectory != "" {
+			_ = os.RemoveAll(temporaryRegistryDirectory)
+		}
+		return nil, err
+	}
 
 	baseProvider := provider.NewSimRepoProvider(opt.SimRepoEndpoint, opt.SimRepoAPIKey, nil)
 	recommendProvider := provider.NewCachedProvider(
@@ -106,23 +137,41 @@ func New(opt Options) (*Service, error) {
 
 	authMW := middleware.NewBearerAuth(opt.APIKeys)
 	recommendHandler := handler.NewRecommendHandler(recommendProvider)
+	trainedProvider := provider.NewTrainedProvider(registry)
+	trainedHandler := handler.NewTrainedRecommendHandler(trainedProvider)
+	bundleHandler := handler.NewBundleHandler(registry, opt.MaxBundleBytes)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
 	mux.Handle("GET /api/v1/ping", authMW.Wrap(handler.HandlePingV1(version.Service, version.Version)))
 	mux.Handle("GET /api/v1/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(recommendHandler.HandleRecommendations)))
+	mux.Handle("GET /api/v2/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleRecommendations)))
+	mux.Handle("POST /api/v2/recommendations/query", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleQuery)))
+	if len(opt.ModelPublishKeys) > 0 {
+		publishAuthMW := middleware.NewBearerAuth(opt.ModelPublishKeys)
+		mux.Handle("POST /internal/v1/model-bundles/{model_version}", publishAuthMW.Wrap(http.HandlerFunc(bundleHandler.HandleUpload)))
+		mux.Handle("GET /internal/v1/model-bundles/active", publishAuthMW.Wrap(http.HandlerFunc(bundleHandler.HandleActive)))
+	}
 
 	if !opt.SkipListenLogEndpoints {
 		log.Printf("starcat-recommend-api %s endpoints ready", version.Version)
 		log.Printf("  GET /api/v1/ping")
 		log.Printf("  GET /api/v1/repos/{repo_id}/recommendations")
+		log.Printf("  GET /api/v2/repos/{repo_id}/recommendations")
+		log.Printf("  POST /api/v2/recommendations/query")
+		if len(opt.ModelPublishKeys) > 0 {
+			log.Printf("  POST /internal/v1/model-bundles/{model_version}")
+			log.Printf("  GET /internal/v1/model-bundles/active")
+		}
 		log.Printf("  GET /healthz")
 	}
 
 	return &Service{
-		opts:     opt,
-		handler:  middleware.CORS(mux),
-		provider: recommendProvider,
+		opts:                 opt,
+		handler:              middleware.CORS(mux),
+		provider:             recommendProvider,
+		registry:             registry,
+		temporaryRegistryDir: temporaryRegistryDirectory,
 	}, nil
 }
 
@@ -133,7 +182,12 @@ func (s *Service) Handler() http.Handler { return s.handler }
 func (s *Service) Addr() string { return ":" + s.opts.Port }
 
 // Close 释放资源（recommend 当前无持久连接，预留接口）。
-func (s *Service) Close() error { return nil }
+func (s *Service) Close() error {
+	if s.temporaryRegistryDir != "" {
+		return os.RemoveAll(s.temporaryRegistryDir)
+	}
+	return nil
+}
 
 func healthzHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
@@ -167,6 +221,21 @@ func requiredListEnv(key string) ([]string, error) {
 	return out, nil
 }
 
+func optionalListEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func envOrDefault(key, fallback string) string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
@@ -186,4 +255,17 @@ func durationEnv(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func int64Env(key string, fallback int64) int64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		log.Printf("[env] invalid %s=%q, using fallback %d", key, value, fallback)
+		return fallback
+	}
+	return parsed
 }
