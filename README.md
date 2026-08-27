@@ -103,6 +103,13 @@ Optional:
 - `METRICS_STORE_FILE`: dedicated request metrics SQLite, defaults to `./data/recommend-metrics.db`.
 - `MAX_BUNDLE_BYTES`: compressed Bundle limit, defaults to 512 MiB.
 
+## Operations and Metrics
+
+- `GET /internal/stats`: process-local v1 cache counters and active v2 ServingBundle scale/metadata.
+- `GET /internal/metrics/{summary,timeseries,routes,status-codes}`: aggregate route traffic, errors, and latency.
+
+Both endpoints use the Service API Key. Bundle publication remains on the isolated publish-key routes. Metrics exclude credentials and raw requests.
+
 ## Local Development
 
 ```bash

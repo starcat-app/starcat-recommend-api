@@ -103,6 +103,13 @@ Optional:
 - `METRICS_STORE_FILE`：独立请求指标 SQLite，默认 `./data/recommend-metrics.db`。
 - `MAX_BUNDLE_BYTES`：压缩 Bundle 上限，默认 512 MiB。
 
+## 运营与调用指标
+
+- `GET /internal/stats`：进程内 v1 缓存计数，以及当前 v2 ServingBundle 规模和元数据。
+- `GET /internal/metrics/{summary,timeseries,routes,status-codes}`：路由调用量、错误与延迟聚合。
+
+两类接口均使用 Service API Key；模型发布继续使用隔离的 Publish Key。指标不保存凭据或原始请求。
+
 ## Local Development
 
 ```bash
