@@ -66,6 +66,20 @@ func TestTrainedBundlePublishAndV2Queries(t *testing.T) {
 		t.Fatalf("active model = %q, want %q", active.Data.ModelVersion, trainedVersion)
 	}
 
+	response = request(t, server.URL, http.MethodGet, "/internal/stats", trainedPublicKey, nil, "")
+	assertStatus(t, response, http.StatusOK)
+	var stats envelope[struct {
+		V2 struct {
+			Active              bool  `json:"active"`
+			Repositories        int64 `json:"repositories"`
+			RecommendationEdges int64 `json:"recommendation_edges"`
+		} `json:"v2"`
+	}]
+	decodeJSON(t, response, &stats)
+	if !stats.Data.V2.Active || stats.Data.V2.Repositories != 4 || stats.Data.V2.RecommendationEdges != 3 {
+		t.Fatalf("unexpected trained serving stats: %+v", stats.Data.V2)
+	}
+
 	response = request(t, server.URL, http.MethodGet, "/api/v2/repos/1/recommendations?limit=1&offset=0", trainedPublicKey, nil, "")
 	assertStatus(t, response, http.StatusOK)
 	var page envelope[model.RecommendationResponse]

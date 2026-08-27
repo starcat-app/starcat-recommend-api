@@ -63,6 +63,18 @@ type ActiveBundle struct {
 	Manifest     Manifest
 }
 
+// OperationalStats exposes active model scale and manifest metadata without filesystem paths.
+type OperationalStats struct {
+	Active              bool            `json:"active"`
+	ModelVersion        string          `json:"model_version,omitempty"`
+	SelectedModel       string          `json:"selected_model,omitempty"`
+	CreatedAt           string          `json:"created_at,omitempty"`
+	Metrics             json.RawMessage `json:"metrics,omitempty"`
+	Repositories        int64           `json:"repositories"`
+	RecommendationEdges int64           `json:"recommendation_edges"`
+	DatabaseBytes       int64           `json:"database_bytes"`
+}
+
 // Registry 管理版本目录和 active 指针。
 //
 // 查询不长期持有数据库连接；每次请求取得不可变路径后只读打开 SQLite，因此激活新版本
@@ -108,6 +120,37 @@ func (r *Registry) Active() (ActiveBundle, error) {
 		return ActiveBundle{}, ErrNoActiveBundle
 	}
 	return *r.active, nil
+}
+
+// Stats opens the immutable active database read-only and returns bounded aggregate metadata.
+func (r *Registry) Stats() (OperationalStats, error) {
+	bundle, err := r.Active()
+	if errors.Is(err, ErrNoActiveBundle) {
+		return OperationalStats{Active: false}, nil
+	}
+	if err != nil {
+		return OperationalStats{}, err
+	}
+	database, err := sql.Open("sqlite", "file:"+filepath.ToSlash(bundle.DatabasePath)+"?mode=ro")
+	if err != nil {
+		return OperationalStats{}, err
+	}
+	defer database.Close()
+	result := OperationalStats{Active: true, ModelVersion: bundle.Version,
+		SelectedModel: bundle.Manifest.SelectedModel, CreatedAt: bundle.Manifest.CreatedAt,
+		Metrics: bundle.Manifest.Metrics}
+	if err := database.QueryRow("SELECT COUNT(*) FROM repositories").Scan(&result.Repositories); err != nil {
+		return OperationalStats{}, err
+	}
+	if err := database.QueryRow("SELECT COUNT(*) FROM recommendations").Scan(&result.RecommendationEdges); err != nil {
+		return OperationalStats{}, err
+	}
+	if info, err := os.Stat(bundle.DatabasePath); err == nil {
+		result.DatabaseBytes = info.Size()
+	} else {
+		return OperationalStats{}, err
+	}
+	return result, nil
 }
 
 // InstallZip 安装 application/zip Bundle，并可在校验成功后立即激活。

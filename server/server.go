@@ -11,9 +11,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	kitenv "github.com/starcat-app/starcat-api-kit/env"
+	kitmetrics "github.com/starcat-app/starcat-api-kit/metrics"
 	"github.com/starcat-app/starcat-recommend-api/internal/handler"
 	"github.com/starcat-app/starcat-recommend-api/internal/middleware"
 	"github.com/starcat-app/starcat-recommend-api/internal/provider"
@@ -38,6 +40,7 @@ type Options struct {
 	CacheTTLEmpty          time.Duration
 	CacheTTLError          time.Duration
 	ModelRegistryDir       string
+	MetricsStoreFile       string
 	ModelPublishKeys       []string
 	MaxBundleBytes         int64
 	SkipListenLogEndpoints bool
@@ -49,7 +52,9 @@ type Service struct {
 	handler              http.Handler
 	provider             provider.Provider
 	registry             *serving.Registry
+	metrics              *kitmetrics.Collector
 	temporaryRegistryDir string
+	closeOnce            sync.Once
 }
 
 // Name 返回聚合网关识别用的稳定服务名。
@@ -77,6 +82,7 @@ func FromEnv() (*Service, error) {
 		CacheTTLEmpty:    kitenv.DurationSeconds("CACHE_TTL_EMPTY_SECONDS", time.Hour),
 		CacheTTLError:    kitenv.DurationSeconds("CACHE_TTL_ERROR_SECONDS", 10*time.Minute),
 		ModelRegistryDir: envOrDefault("MODEL_REGISTRY_DIR", defaultModelRegistry),
+		MetricsStoreFile: envOrDefault("METRICS_STORE_FILE", "./data/recommend-metrics.db"),
 		ModelPublishKeys: optionalListEnv("MODEL_PUBLISH_KEYS"),
 		MaxBundleBytes:   int64Env("MAX_BUNDLE_BYTES", defaultMaxBundleBytes),
 	}
@@ -96,6 +102,9 @@ func New(opt Options) (*Service, error) {
 	}
 	if strings.TrimSpace(opt.SimRepoEndpoint) == "" {
 		opt.SimRepoEndpoint = defaultSimRepoEndpoint
+	}
+	if strings.TrimSpace(opt.MetricsStoreFile) == "" {
+		opt.MetricsStoreFile = ":memory:"
 	}
 	if opt.CacheTTLSuccess <= 0 {
 		opt.CacheTTLSuccess = 7 * 24 * time.Hour
@@ -126,6 +135,22 @@ func New(opt Options) (*Service, error) {
 		}
 		return nil, err
 	}
+	metricsStore, err := kitmetrics.OpenSQLite(opt.MetricsStoreFile)
+	if err != nil {
+		if temporaryRegistryDirectory != "" {
+			_ = os.RemoveAll(temporaryRegistryDirectory)
+		}
+		return nil, fmt.Errorf("initialize metrics SQLite: %w", err)
+	}
+	metricsCollector, err := kitmetrics.NewCollector(kitmetrics.Config{Service: Name(), Store: metricsStore})
+	if err != nil {
+		_ = metricsStore.Close()
+		if temporaryRegistryDirectory != "" {
+			_ = os.RemoveAll(temporaryRegistryDirectory)
+		}
+		return nil, fmt.Errorf("initialize metrics collector: %w", err)
+	}
+	metricsHandler := kitmetrics.NewHandler(Name(), metricsCollector.Store())
 
 	baseProvider := provider.NewSimRepoProvider(opt.SimRepoEndpoint, opt.SimRepoAPIKey, nil)
 	recommendProvider := provider.NewCachedProvider(
@@ -147,6 +172,11 @@ func New(opt Options) (*Service, error) {
 	mux.Handle("GET /api/v1/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(recommendHandler.HandleRecommendations)))
 	mux.Handle("GET /api/v2/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleRecommendations)))
 	mux.Handle("POST /api/v2/recommendations/query", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleQuery)))
+	mux.Handle("GET /internal/stats", authMW.Wrap(handler.HandleOperationalStats(recommendProvider, registry)))
+	mux.Handle("GET /internal/metrics/summary", authMW.Wrap(http.HandlerFunc(metricsHandler.HandleSummary)))
+	mux.Handle("GET /internal/metrics/timeseries", authMW.Wrap(http.HandlerFunc(metricsHandler.HandleTimeseries)))
+	mux.Handle("GET /internal/metrics/routes", authMW.Wrap(http.HandlerFunc(metricsHandler.HandleRoutes)))
+	mux.Handle("GET /internal/metrics/status-codes", authMW.Wrap(http.HandlerFunc(metricsHandler.HandleStatusCodes)))
 	if len(opt.ModelPublishKeys) > 0 {
 		publishAuthMW := middleware.NewBearerAuth(opt.ModelPublishKeys)
 		mux.Handle("POST /internal/v1/model-bundles/{model_version}", publishAuthMW.Wrap(http.HandlerFunc(bundleHandler.HandleUpload)))
@@ -168,9 +198,10 @@ func New(opt Options) (*Service, error) {
 
 	return &Service{
 		opts:                 opt,
-		handler:              middleware.CORS(mux),
+		handler:              metricsCollector.Wrap(middleware.CORS(mux)),
 		provider:             recommendProvider,
 		registry:             registry,
+		metrics:              metricsCollector,
 		temporaryRegistryDir: temporaryRegistryDirectory,
 	}, nil
 }
@@ -183,10 +214,18 @@ func (s *Service) Addr() string { return ":" + s.opts.Port }
 
 // Close 释放资源（recommend 当前无持久连接，预留接口）。
 func (s *Service) Close() error {
-	if s.temporaryRegistryDir != "" {
-		return os.RemoveAll(s.temporaryRegistryDir)
-	}
-	return nil
+	var closeErr error
+	s.closeOnce.Do(func() {
+		if s.metrics != nil {
+			closeErr = s.metrics.Close()
+		}
+		if s.temporaryRegistryDir != "" {
+			if err := os.RemoveAll(s.temporaryRegistryDir); closeErr == nil {
+				closeErr = err
+			}
+		}
+	})
+	return closeErr
 }
 
 func healthzHandler(w http.ResponseWriter, r *http.Request) {

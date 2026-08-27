@@ -100,6 +100,7 @@ Optional:
 - `CACHE_TTL_ERROR_SECONDS`: defaults to 10 minutes.
 - `MODEL_PUBLISH_KEYS`：逗号分隔的 Trainer 发布密钥；未配置时不注册内部发布路由。
 - `MODEL_REGISTRY_DIR`：不可变 Bundle Registry，默认 `./data/model-registry`。
+- `METRICS_STORE_FILE`：独立请求指标 SQLite，默认 `./data/recommend-metrics.db`。
 - `MAX_BUNDLE_BYTES`：压缩 Bundle 上限，默认 512 MiB。
 
 ## Local Development

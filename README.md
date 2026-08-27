@@ -100,6 +100,7 @@ Optional:
 - `CACHE_TTL_ERROR_SECONDS`: defaults to 10 minutes.
 - `MODEL_PUBLISH_KEYS`: comma-separated Trainer publishing keys. Internal publish routes are disabled when omitted.
 - `MODEL_REGISTRY_DIR`: immutable Bundle registry, defaults to `./data/model-registry`.
+- `METRICS_STORE_FILE`: dedicated request metrics SQLite, defaults to `./data/recommend-metrics.db`.
 - `MAX_BUNDLE_BYTES`: compressed Bundle limit, defaults to 512 MiB.
 
 ## Local Development
