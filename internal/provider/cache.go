@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -20,6 +21,18 @@ type CachedProvider struct {
 	mu         sync.Mutex
 	items      map[string]cacheEntry
 	maxEntries int
+	hits       atomic.Int64
+	misses     atomic.Int64
+	errors     atomic.Int64
+}
+
+// CacheStats is a process-lifetime snapshot; counters reset on service restart.
+type CacheStats struct {
+	Entries        int   `json:"entries"`
+	MaximumEntries int   `json:"maximum_entries"`
+	Hits           int64 `json:"hits"`
+	Misses         int64 `json:"misses"`
+	UpstreamErrors int64 `json:"upstream_errors"`
 }
 
 // defaultCacheMaxEntries 防止 repoID × limit × offset 的组合键让常驻进程内存无界增长。
@@ -47,16 +60,19 @@ func (p *CachedProvider) Recommend(ctx context.Context, query Query) (Result, er
 	key := cacheKey(query)
 	now := time.Now()
 	if entry, ok := p.get(key, now); ok {
+		p.hits.Add(1)
 		if entry.err != nil {
 			return Result{}, entry.err
 		}
 		entry.result.CacheStatus = "hit"
 		return entry.result, nil
 	}
+	p.misses.Add(1)
 
 	result, err := p.base.Recommend(ctx, query)
 	ttl := p.successTTL
 	if err != nil {
+		p.errors.Add(1)
 		ttl = p.errorTTL
 	} else if len(result.Response.Items) == 0 {
 		ttl = p.emptyTTL
@@ -67,6 +83,16 @@ func (p *CachedProvider) Recommend(ctx context.Context, query Query) (Result, er
 		expiresAt: now.Add(ttl),
 	})
 	return result, err
+}
+
+// Stats returns a race-safe snapshot without exposing cache keys or repository ids.
+func (p *CachedProvider) Stats() CacheStats {
+	p.mu.Lock()
+	entries := len(p.items)
+	maximum := p.maxEntries
+	p.mu.Unlock()
+	return CacheStats{Entries: entries, MaximumEntries: maximum, Hits: p.hits.Load(),
+		Misses: p.misses.Load(), UpstreamErrors: p.errors.Load()}
 }
 
 func (p *CachedProvider) get(key string, now time.Time) (cacheEntry, bool) {

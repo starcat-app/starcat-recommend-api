@@ -44,6 +44,10 @@ func TestCachedProviderCachesSuccess(t *testing.T) {
 	if first.CacheStatus != "fresh" || second.CacheStatus != "hit" {
 		t.Fatalf("cache statuses = %q/%q", first.CacheStatus, second.CacheStatus)
 	}
+	stats := cached.Stats()
+	if stats.Misses != 1 || stats.Hits != 1 || stats.Entries != 1 || stats.UpstreamErrors != 0 {
+		t.Fatalf("unexpected cache stats: %#v", stats)
+	}
 }
 
 func TestCachedProviderRemovesExpiredEntryOnRead(t *testing.T) {

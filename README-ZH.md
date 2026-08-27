@@ -60,7 +60,7 @@ brew install --cask starcat
 
 Starcat 相似仓库推荐后端。
 
-第一版通过服务端中转 SimRepo 的非官方 Qdrant Recommend API, 为 Starcat macOS 客户端提供稳定的 `/api/v1/repos/{repo_id}/recommendations` 契约。客户端不直连 SimRepo, 不持有 SimRepo key, 后续可以在本服务内替换为 Starcat 自研推荐 Provider。
+本服务是 Starcat 长期统一推荐入口。`/api/v1` 继续中转 SimRepo 的非官方 Qdrant Recommend API，保持现有客户端和第三方契约不变；`/api/v2` 只读 `starcat-recsys-trainer` 发布的自研 ServingBundle。客户端不直连 SimRepo，也不持有 SimRepo 或模型发布密钥。
 
 ## Endpoints
 
@@ -69,6 +69,10 @@ Starcat 相似仓库推荐后端。
 | `GET` | `/healthz` | No | Process health check |
 | `GET` | `/api/v1/ping` | Yes | Starcat client connectivity probe |
 | `GET` | `/api/v1/repos/{repo_id}/recommendations?limit=10&offset=0` | Yes | Similar repository recommendations |
+| `GET` | `/api/v2/repos/{repo_id}/recommendations?limit=10&offset=0` | Client key | 自研单仓推荐 |
+| `POST` | `/api/v2/recommendations/query` | Client key | 自研多 seed 推荐 |
+| `POST` | `/internal/v1/model-bundles/{model_version}?activate=true` | Publish key | Trainer 发布并激活 Bundle |
+| `GET` | `/internal/v1/model-bundles/active` | Publish key | 查询 active 模型 |
 
 鉴权后的 ping 响应包含服务标识，以及由发布 tag 注入的构建版本：
 
@@ -94,6 +98,17 @@ Optional:
 - `CACHE_TTL_SUCCESS_SECONDS`: defaults to 7 days.
 - `CACHE_TTL_EMPTY_SECONDS`：默认 1 小时。
 - `CACHE_TTL_ERROR_SECONDS`: defaults to 10 minutes.
+- `MODEL_PUBLISH_KEYS`：逗号分隔的 Trainer 发布密钥；未配置时不注册内部发布路由。
+- `MODEL_REGISTRY_DIR`：不可变 Bundle Registry，默认 `./data/model-registry`。
+- `METRICS_STORE_FILE`：独立请求指标 SQLite，默认 `./data/recommend-metrics.db`。
+- `MAX_BUNDLE_BYTES`：压缩 Bundle 上限，默认 512 MiB。
+
+## 运营与调用指标
+
+- `GET /internal/stats`：进程内 v1 缓存计数，以及当前 v2 ServingBundle 规模和元数据。
+- `GET /internal/metrics/{summary,timeseries,routes,status-codes}`：路由调用量、错误与延迟聚合。
+
+两类接口均使用 Service API Key；模型发布继续使用隔离的 Publish Key。指标不保存凭据或原始请求。
 
 ## Local Development
 
@@ -109,7 +124,21 @@ curl http://127.0.0.1:5005/healthz
 curl -H "Authorization: Bearer $API_KEY" http://127.0.0.1:5005/api/v1/ping
 curl -H "Authorization: Bearer $API_KEY" \
   "http://127.0.0.1:5005/api/v1/repos/41881900/recommendations?limit=10&offset=0"
+curl -H "Authorization: Bearer $API_KEY" \
+  "http://127.0.0.1:5005/api/v2/repos/41881900/recommendations?limit=10&offset=0"
 ```
+
+Trainer 发布包只允许包含 `recommendations.sqlite`、`manifest.json` 和 `checksums.json`：
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $MODEL_PUBLISH_KEY" \
+  -H "Content-Type: application/zip" \
+  --data-binary @serving-bundle.zip \
+  "http://127.0.0.1:5005/internal/v1/model-bundles/costar-20260824?activate=true"
+```
+
+服务端只有在文件白名单、manifest 版本、checksum、SQLite `quick_check` 和必需表全部通过后才安装并原子更新 `active.json`。同一版本内容不同会返回 `409`，失败发布不会改变当前 active 模型。
 
 ## Quality Gates
 
@@ -122,13 +151,16 @@ go build ./...
 
 ## Provider Boundary
 
-The current provider chain is:
+当前两条 Provider 链互不覆盖：
 
 ```text
 RecommendHandler -> CachedProvider -> SimRepoProvider -> SimRepo Qdrant API
+TrainedRecommendHandler -> TrainedProvider -> active ServingBundle SQLite
 ```
 
 `CachedProvider` 最多保留 10000 个 `repoID:limit:offset` 组合键。读取时删除过期项；容量已满时淘汰最早到期的条目。
+
+自研响应复用现有推荐卡片字段，并额外返回 `model_version` 与 `signals`。训练、Collection 原始快照和在线查询保持隔离，Recommend API 不读取 `participant_id`。
 
 Future providers should keep the response DTO stable:
 
