@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 仅发布源码 tag 与 GitHub Release。Starcat 官方 Fly 生产部署统一由 starcat-api 聚合仓执行。
 set -euo pipefail
 
 VERSION="${1:-}"
