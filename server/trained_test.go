@@ -156,12 +156,68 @@ func TestBundleRejectsChecksumMismatchWithoutChangingActive(t *testing.T) {
 	}
 }
 
+func TestTrainedRecommendationsRevalidateByModelVersionETag(t *testing.T) {
+	service, err := New(Options{
+		APIKeys:                []string{trainedPublicKey},
+		SimRepoAPIKey:          "unused-in-v2-test",
+		ModelRegistryDir:       filepath.Join(t.TempDir(), "registry"),
+		ModelPublishKeys:       []string{trainedAdminKey},
+		MaxBundleBytes:         10 << 20,
+		SkipListenLogEndpoints: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.Handler())
+	t.Cleanup(func() {
+		server.Close()
+		if err := service.Close(); err != nil {
+			t.Errorf("close service: %v", err)
+		}
+	})
+
+	publishBundle(t, server.URL, trainedVersion)
+	path := "/api/v2/repos/1/recommendations?limit=1&offset=0"
+	response := request(t, server.URL, http.MethodGet, path, trainedPublicKey, nil, "")
+	assertStatus(t, response, http.StatusOK)
+	entityTag := response.Header.Get("ETag")
+	if entityTag == "" {
+		t.Fatal("trained recommendation response must expose ETag")
+	}
+	response.Body.Close()
+
+	response = requestWithHeaders(t, server.URL, http.MethodGet, path, trainedPublicKey, nil, "", map[string]string{
+		"If-None-Match": entityTag,
+	})
+	assertStatus(t, response, http.StatusNotModified)
+	response.Body.Close()
+
+	nextVersion := "costar-test-v2"
+	publishBundle(t, server.URL, nextVersion)
+	response = requestWithHeaders(t, server.URL, http.MethodGet, path, trainedPublicKey, nil, "", map[string]string{
+		"If-None-Match": entityTag,
+	})
+	assertStatus(t, response, http.StatusOK)
+	if response.Header.Get("ETag") == entityTag {
+		t.Fatal("activating a new model must change the recommendation ETag")
+	}
+	var page envelope[model.RecommendationResponse]
+	decodeJSON(t, response, &page)
+	if page.Data.ModelVersion != nextVersion {
+		t.Fatalf("model version = %q, want %q", page.Data.ModelVersion, nextVersion)
+	}
+}
+
 type envelope[T any] struct {
 	SchemaVersion int `json:"schema_version"`
 	Data          T   `json:"data"`
 }
 
 func request(t *testing.T, baseURL string, method string, path string, key string, body []byte, contentType string) *http.Response {
+	return requestWithHeaders(t, baseURL, method, path, key, body, contentType, nil)
+}
+
+func requestWithHeaders(t *testing.T, baseURL string, method string, path string, key string, body []byte, contentType string, headers map[string]string) *http.Response {
 	t.Helper()
 	request, err := http.NewRequest(method, baseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -173,11 +229,29 @@ func request(t *testing.T, baseURL string, method string, path string, key strin
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return response
+}
+
+func publishBundle(t *testing.T, baseURL string, version string) {
+	t.Helper()
+	response := request(
+		t,
+		baseURL,
+		http.MethodPost,
+		"/internal/v1/model-bundles/"+version+"?activate=true",
+		trainedAdminKey,
+		buildBundleZip(t, version),
+		"application/zip",
+	)
+	assertStatus(t, response, http.StatusOK)
+	response.Body.Close()
 }
 
 func assertStatus(t *testing.T, response *http.Response, expected int) {

@@ -40,6 +40,18 @@ func (p *TrainedProvider) Close() error {
 	return p.databases.close()
 }
 
+// ActiveModelVersion 返回当前原子激活的 ServingBundle 版本。
+//
+// handler 在执行 SQLite 查询前用它处理条件请求：客户端已缓存同一版本时直接返回
+// 304，避免为了确认版本未变化而读取完整推荐列表。
+func (p *TrainedProvider) ActiveModelVersion() (string, error) {
+	bundle, err := p.registry.Active()
+	if err != nil {
+		return "", err
+	}
+	return bundle.Version, nil
+}
+
 // Recommend 查询一个 seed repo 的预计算 Top-K。
 func (p *TrainedProvider) Recommend(ctx context.Context, query Query) (Result, error) {
 	bundle, err := p.registry.Active()

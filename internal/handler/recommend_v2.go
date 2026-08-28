@@ -3,8 +3,10 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/starcat-app/starcat-recommend-api/internal/model"
 	"github.com/starcat-app/starcat-recommend-api/internal/provider"
@@ -38,13 +40,48 @@ func (h *TrainedRecommendHandler) HandleRecommendations(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "offset must be non-negative", nil)
 		return
 	}
+	activeVersion, err := h.provider.ActiveModelVersion()
+	if err != nil {
+		writeServingError(w, err)
+		return
+	}
+	entityTag := recommendationETag(activeVersion, repoID, limit, offset)
+	w.Header().Set("ETag", entityTag)
+	// no-cache 允许客户端保存响应，但每次复用前必须携带 ETag 向服务端确认模型版本。
+	// private 防止带鉴权的个性化调用被共享代理缓存。
+	w.Header().Set("Cache-Control", "private, no-cache")
+	if entityTagMatches(r.Header.Get("If-None-Match"), entityTag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	result, err := h.provider.Recommend(r.Context(), provider.Query{RepoID: repoID, Limit: limit, Offset: offset})
 	if err != nil {
 		writeServingError(w, err)
 		return
 	}
+	// 模型可能在版本检查和 SQLite 查询之间完成原子切换。响应 ETag 必须以本次实际
+	// 查询固定的 Bundle 为准，不能继续沿用检查时看到的旧版本。
+	w.Header().Set("ETag", recommendationETag(result.Response.ModelVersion, repoID, limit, offset))
 	meta := &model.Meta{PageSize: limit, Total: len(result.Response.Items), Source: result.Response.Source, CacheStatus: result.CacheStatus}
 	writeJSONWithMeta(w, result.Response, meta)
+}
+
+// recommendationETag 标识一个不可变 ServingBundle 中某一页推荐响应。
+// model version 由 Registry 限制为安全字符，因此可直接组成 HTTP opaque-tag。
+func recommendationETag(modelVersion string, repoID int64, limit int, offset int) string {
+	return fmt.Sprintf(`"recommendation:%s:%d:%d:%d"`, modelVersion, repoID, limit, offset)
+}
+
+// entityTagMatches 支持 RFC 9110 定义的 If-None-Match 通配符与逗号分隔标签。
+// Starcat 当前只发送一个标签，兼容列表可以避免代理合并请求头后错误漏判。
+func entityTagMatches(header string, current string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" || candidate == current {
+			return true
+		}
+	}
+	return false
 }
 
 type recommendationQueryRequest struct {

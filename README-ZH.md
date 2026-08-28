@@ -74,6 +74,8 @@ Starcat 相似仓库推荐后端。
 | `POST` | `/internal/v1/model-bundles/{model_version}?activate=true` | Publish key | Trainer 发布并激活 Bundle |
 | `GET` | `/internal/v1/model-bundles/active` | Publish key | 查询 active 模型 |
 
+v2 单仓接口会根据当前不可变模型版本与分页参数返回 `ETag`，并设置 `Cache-Control: private, no-cache`。客户端可通过 `If-None-Match` 重验证：模型未变化时直接返回 `304 Not Modified`，不查询或传输推荐列表；激活新模型后返回 `200` 及新版本数据。
+
 鉴权后的 ping 响应包含服务标识，以及由发布 tag 注入的构建版本：
 
 ```json

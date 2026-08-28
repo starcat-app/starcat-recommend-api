@@ -74,6 +74,8 @@ This service is Starcat's long-term recommendation entry point. `/api/v1` keeps 
 | `POST` | `/internal/v1/model-bundles/{model_version}?activate=true` | Publish key | Publish and activate a ServingBundle |
 | `GET` | `/internal/v1/model-bundles/active` | Publish key | Read the active model version |
 
+The v2 single-repository endpoint returns an `ETag` derived from the active immutable model version and page parameters, together with `Cache-Control: private, no-cache`. Clients may send that value through `If-None-Match`: an unchanged model returns `304 Not Modified` without querying or transferring the recommendation page, while activating a new model returns `200` with the new bundle version and data.
+
 The authenticated ping response includes the service identity and the build version injected from the release tag:
 
 ```json
