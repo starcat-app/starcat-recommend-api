@@ -90,6 +90,9 @@ func TestTrainedBundlePublishAndV2Queries(t *testing.T) {
 	if page.Data.Items[0].RepoID != 2 || page.Data.Items[0].FullName != "owner/two" {
 		t.Fatalf("unexpected first recommendation: %+v", page.Data.Items[0])
 	}
+	if page.Data.Items[0].DisplayScore == nil || *page.Data.Items[0].DisplayScore != 0.97 {
+		t.Fatalf("unexpected calibrated display score: %+v", page.Data.Items[0])
+	}
 	if !page.Data.HasMore || page.Data.NextOffset == nil || *page.Data.NextOffset != 1 {
 		t.Fatalf("unexpected paging: %+v", page.Data)
 	}
@@ -109,6 +112,9 @@ func TestTrainedBundlePublishAndV2Queries(t *testing.T) {
 	decodeJSON(t, response, &multi)
 	if len(multi.Data.Items) != 1 || multi.Data.Items[0].RepoID != 3 {
 		t.Fatalf("unexpected multi recommendations: %+v", multi.Data.Items)
+	}
+	if multi.Data.Items[0].DisplayScore != nil {
+		t.Fatalf("multi-seed score must not reuse single-edge calibration: %+v", multi.Data.Items[0])
 	}
 }
 
@@ -221,7 +227,8 @@ CREATE TABLE repositories (
 );
 CREATE TABLE recommendations (
     source_repo_id INTEGER NOT NULL, target_repo_id INTEGER NOT NULL,
-    score REAL NOT NULL, rank INTEGER NOT NULL, model TEXT NOT NULL,
+    score REAL NOT NULL, display_score REAL NOT NULL,
+    rank INTEGER NOT NULL, model TEXT NOT NULL,
     signals TEXT NOT NULL, PRIMARY KEY(source_repo_id, target_repo_id)
 );
 INSERT INTO repositories VALUES
@@ -230,9 +237,9 @@ INSERT INTO repositories VALUES
     (3, 'owner/three', 'three', '[]', 'Swift', '', 30, 3, NULL),
     (4, 'owner/four', 'four', '[]', 'Go', '', 40, 4, NULL);
 INSERT INTO recommendations VALUES
-    (1, 2, 0.9, 1, 'costar', '{"kind":"time_decayed_costar","support":2}'),
-    (1, 3, 0.5, 2, 'costar', '{"kind":"time_decayed_costar","support":1}'),
-    (4, 2, 0.8, 1, 'costar', '{"kind":"time_decayed_costar","support":2}');`)
+    (1, 2, 0.9, 0.97, 1, 'costar', '{"kind":"time_decayed_costar","support":2}'),
+    (1, 3, 0.5, 0.75, 2, 'costar', '{"kind":"time_decayed_costar","support":1}'),
+    (4, 2, 0.8, 0.90, 1, 'costar', '{"kind":"time_decayed_costar","support":2}');`)
 	if err != nil {
 		database.Close()
 		t.Fatal(err)

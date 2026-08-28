@@ -22,8 +22,15 @@ type bundleDatabasePool struct {
 
 type bundleDatabaseEntry struct {
 	path       string
-	database   *sql.DB
+	handle     *bundleDatabaseHandle
 	references int
+}
+
+// bundleDatabaseHandle 把共享连接与该不可变 Bundle 的可选能力固定在一起。
+// 旧 v12 没有 display_score，新 Bundle 才有；能力只需在首次打开版本时探测一次。
+type bundleDatabaseHandle struct {
+	database             *sql.DB
+	supportsDisplayScore bool
 }
 
 func newBundleDatabasePool() *bundleDatabasePool {
@@ -34,7 +41,7 @@ func newBundleDatabasePool() *bundleDatabasePool {
 func (p *bundleDatabasePool) acquire(
 	ctx context.Context,
 	bundle serving.ActiveBundle,
-) (*sql.DB, func(string), error) {
+) (*bundleDatabaseHandle, func(string), error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -47,7 +54,7 @@ func (p *bundleDatabasePool) acquire(
 			return nil, nil, fmt.Errorf("model version %s database path changed", bundle.Version)
 		}
 		entry.references++
-		return entry.database, p.releaseFunc(bundle.Version), nil
+		return entry.handle, p.releaseFunc(bundle.Version), nil
 	}
 
 	// ServingBundle 安装后内容不可变，immutable=1 可省掉 SQLite 的文件变更检查；
@@ -65,12 +72,36 @@ func (p *bundleDatabasePool) acquire(
 		_ = database.Close()
 		return nil, nil, err
 	}
+	supportsDisplayScore, err := tableHasColumn(ctx, database, "recommendations", "display_score")
+	if err != nil {
+		_ = database.Close()
+		return nil, nil, err
+	}
+	handle := &bundleDatabaseHandle{
+		database:             database,
+		supportsDisplayScore: supportsDisplayScore,
+	}
 	p.entries[bundle.Version] = &bundleDatabaseEntry{
 		path:       path,
-		database:   database,
+		handle:     handle,
 		references: 1,
 	}
-	return database, p.releaseFunc(bundle.Version), nil
+	return handle, p.releaseFunc(bundle.Version), nil
+}
+
+// tableHasColumn 支持 API 在不中断旧 Bundle 的前提下增量扩展 Serving schema。
+func tableHasColumn(ctx context.Context, database *sql.DB, table string, column string) (bool, error) {
+	var count int
+	err := database.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?",
+		table,
+		column,
+	).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // releaseFunc 让调用方在请求结束时传入当时的 active 版本，以安全回收所有非 active 连接。
@@ -86,7 +117,7 @@ func (p *bundleDatabasePool) releaseFunc(version string) func(string) {
 			if candidateVersion == activeVersion || candidate.references > 0 {
 				continue
 			}
-			_ = candidate.database.Close()
+			_ = candidate.handle.database.Close()
 			delete(p.entries, candidateVersion)
 		}
 	}
@@ -99,7 +130,7 @@ func (p *bundleDatabasePool) close() error {
 	p.closed = true
 	var firstErr error
 	for version, entry := range p.entries {
-		if err := entry.database.Close(); err != nil && firstErr == nil {
+		if err := entry.handle.database.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		delete(p.entries, version)

@@ -128,7 +128,7 @@ type weightedSeed struct {
 
 func queryRows(
 	ctx context.Context,
-	database *sql.DB,
+	database *bundleDatabaseHandle,
 	seeds []weightedSeed,
 	excludeRepoIDs []int64,
 	limit int,
@@ -141,6 +141,12 @@ func queryRows(
 		parameters = append(parameters, seed.repoID, seed.weight)
 	}
 	excluded := uniquePositiveIDs(excludeRepoIDs)
+	displayScoreExpression := "NULL"
+	if database.supportsDisplayScore && len(seeds) == 1 && seeds[0].weight == 1 {
+		// display_score 是单条 item-to-item 边在当前模型中的全局百分位。
+		// 多 seed 正负加权后不再服从该分布，必须返回空而不是伪造百分比。
+		displayScoreExpression = "MAX(r.display_score)"
+	}
 	exclusion := ""
 	if len(excluded) > 0 {
 		placeholders := make([]string, len(excluded))
@@ -156,6 +162,7 @@ WITH seeds(repo_id, weight) AS (VALUES %s), scored AS (
     SELECT
         r.target_repo_id,
         SUM(r.score * seeds.weight) AS combined_score,
+		%s AS display_score,
         MIN(r.rank) AS best_rank,
         MIN(r.model) AS model,
         MIN(r.signals) AS signals
@@ -173,15 +180,16 @@ SELECT
     repositories.stars,
     repositories.forks,
     scored.combined_score,
+	scored.display_score,
     scored.best_rank,
     scored.model,
     scored.signals
 FROM scored
 JOIN repositories ON repositories.repo_id = scored.target_repo_id
 ORDER BY scored.combined_score DESC, scored.best_rank, scored.target_repo_id
-LIMIT ? OFFSET ?`, strings.Join(values, ","), exclusion)
+LIMIT ? OFFSET ?`, strings.Join(values, ","), displayScoreExpression, exclusion)
 
-	rows, err := database.QueryContext(ctx, statement, parameters...)
+	rows, err := database.database.QueryContext(ctx, statement, parameters...)
 	if err != nil {
 		return nil, err
 	}
@@ -189,12 +197,13 @@ LIMIT ? OFFSET ?`, strings.Join(values, ","), exclusion)
 	items := make([]model.RecommendationItem, 0, limit)
 	for rows.Next() {
 		var (
-			item        model.RecommendationItem
-			description sql.NullString
-			language    sql.NullString
-			modelName   string
-			signalsJSON string
-			bestRank    int
+			item         model.RecommendationItem
+			description  sql.NullString
+			language     sql.NullString
+			displayScore sql.NullFloat64
+			modelName    string
+			signalsJSON  string
+			bestRank     int
 		)
 		if err := rows.Scan(
 			&item.RepoID,
@@ -204,6 +213,7 @@ LIMIT ? OFFSET ?`, strings.Join(values, ","), exclusion)
 			&item.Stars,
 			&item.Forks,
 			&item.Score,
+			&displayScore,
 			&bestRank,
 			&modelName,
 			&signalsJSON,
@@ -215,6 +225,10 @@ LIMIT ? OFFSET ?`, strings.Join(values, ","), exclusion)
 		}
 		if language.Valid {
 			item.Language = language.String
+		}
+		if displayScore.Valid {
+			value := displayScore.Float64
+			item.DisplayScore = &value
 		}
 		item.Source = "starcat_trained"
 		item.Signals = parseSignals(signalsJSON)
