@@ -51,6 +51,7 @@ type Service struct {
 	opts                 Options
 	handler              http.Handler
 	provider             provider.Provider
+	trainedProvider      *provider.TrainedProvider
 	registry             *serving.Registry
 	metrics              *kitmetrics.Collector
 	temporaryRegistryDir string
@@ -200,6 +201,7 @@ func New(opt Options) (*Service, error) {
 		opts:                 opt,
 		handler:              metricsCollector.Wrap(middleware.CORS(mux)),
 		provider:             recommendProvider,
+		trainedProvider:      trainedProvider,
 		registry:             registry,
 		metrics:              metricsCollector,
 		temporaryRegistryDir: temporaryRegistryDirectory,
@@ -212,12 +214,17 @@ func (s *Service) Handler() http.Handler { return s.handler }
 // Addr 返回建议监听地址（":port"）。
 func (s *Service) Addr() string { return ":" + s.opts.Port }
 
-// Close 释放资源（recommend 当前无持久连接，预留接口）。
+// Close 释放指标存储和自研推荐 ServingBundle 的只读数据库连接。
 func (s *Service) Close() error {
 	var closeErr error
 	s.closeOnce.Do(func() {
+		if s.trainedProvider != nil {
+			closeErr = s.trainedProvider.Close()
+		}
 		if s.metrics != nil {
-			closeErr = s.metrics.Close()
+			if err := s.metrics.Close(); closeErr == nil {
+				closeErr = err
+			}
 		}
 		if s.temporaryRegistryDir != "" {
 			if err := os.RemoveAll(s.temporaryRegistryDir); closeErr == nil {

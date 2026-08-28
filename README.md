@@ -146,6 +146,8 @@ TrainedRecommendHandler -> TrainedProvider -> active ServingBundle SQLite
 
 `CachedProvider` keeps at most 10,000 `repoID:limit:offset` entries. Expired entries are removed on read; when capacity is reached, the entry with the earliest expiry is evicted.
 
+`TrainedProvider` reuses a read-only SQLite connection pool per immutable model version. An active-version switch does not interrupt requests already using the previous bundle; the old pool entry is closed after its final reference is released, and all remaining connections are closed with the service.
+
 Future providers should keep the response DTO stable:
 
 ```text

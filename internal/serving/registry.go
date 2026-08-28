@@ -77,8 +77,8 @@ type OperationalStats struct {
 
 // Registry 管理版本目录和 active 指针。
 //
-// 查询不长期持有数据库连接；每次请求取得不可变路径后只读打开 SQLite，因此激活新版本
-// 不会关闭仍在执行的旧请求，也不需要复杂的连接引用计数。
+// 查询取得不可变路径后由 TrainedProvider 按版本复用只读 SQLite 连接；Provider 通过
+// 请求引用计数保证激活新版本时不会关闭仍在执行的旧请求。
 type Registry struct {
 	root       string
 	versions   string

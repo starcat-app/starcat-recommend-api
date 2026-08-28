@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -27,12 +26,18 @@ type MultiQuery struct {
 // Provider 不接触 Collection 原始快照，也不保留 participant_id。所有查询先固定当前
 // active Bundle 路径，因此并发激活新版本不会让单个请求混用两个模型。
 type TrainedProvider struct {
-	registry *serving.Registry
+	registry  *serving.Registry
+	databases *bundleDatabasePool
 }
 
 // NewTrainedProvider 创建自研推荐 Provider。
 func NewTrainedProvider(registry *serving.Registry) *TrainedProvider {
-	return &TrainedProvider{registry: registry}
+	return &TrainedProvider{registry: registry, databases: newBundleDatabasePool()}
+}
+
+// Close 释放 Provider 复用的所有 ServingBundle 数据库连接。
+func (p *TrainedProvider) Close() error {
+	return p.databases.close()
 }
 
 // Recommend 查询一个 seed repo 的预计算 Top-K。
@@ -41,7 +46,12 @@ func (p *TrainedProvider) Recommend(ctx context.Context, query Query) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
-	rows, err := queryRows(ctx, bundle, []weightedSeed{{query.RepoID, 1}}, []int64{query.RepoID}, query.Limit+1, query.Offset)
+	database, release, err := p.databases.acquire(ctx, bundle)
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() { release(p.activeVersion()) }()
+	rows, err := queryRows(ctx, database, []weightedSeed{{query.RepoID, 1}}, []int64{query.RepoID}, query.Limit+1, query.Offset)
 	if err != nil {
 		return Result{}, err
 	}
@@ -74,6 +84,11 @@ func (p *TrainedProvider) RecommendMany(ctx context.Context, query MultiQuery) (
 	if err != nil {
 		return model.MultiRecommendationResponse{}, err
 	}
+	database, release, err := p.databases.acquire(ctx, bundle)
+	if err != nil {
+		return model.MultiRecommendationResponse{}, err
+	}
+	defer func() { release(p.activeVersion()) }()
 	seeds := make([]weightedSeed, 0, len(query.PositiveRepoIDs)+len(query.NegativeRepoIDs))
 	for _, repoID := range query.PositiveRepoIDs {
 		seeds = append(seeds, weightedSeed{repoID, 1})
@@ -84,7 +99,7 @@ func (p *TrainedProvider) RecommendMany(ctx context.Context, query MultiQuery) (
 	excluded := append([]int64{}, query.ExcludeRepoIDs...)
 	excluded = append(excluded, query.PositiveRepoIDs...)
 	excluded = append(excluded, query.NegativeRepoIDs...)
-	items, err := queryRows(ctx, bundle, seeds, excluded, query.Limit, 0)
+	items, err := queryRows(ctx, database, seeds, excluded, query.Limit, 0)
 	if err != nil {
 		return model.MultiRecommendationResponse{}, err
 	}
@@ -96,6 +111,16 @@ func (p *TrainedProvider) RecommendMany(ctx context.Context, query MultiQuery) (
 	}, nil
 }
 
+// activeVersion 在请求释放连接时重新读取 active 指针。模型切换期间，旧请求因此只会
+// 在执行完查询后关闭旧版本连接，不会影响已经固定的 Bundle 快照。
+func (p *TrainedProvider) activeVersion() string {
+	bundle, err := p.registry.Active()
+	if err != nil {
+		return ""
+	}
+	return bundle.Version
+}
+
 type weightedSeed struct {
 	repoID int64
 	weight int
@@ -103,18 +128,12 @@ type weightedSeed struct {
 
 func queryRows(
 	ctx context.Context,
-	bundle serving.ActiveBundle,
+	database *sql.DB,
 	seeds []weightedSeed,
 	excludeRepoIDs []int64,
 	limit int,
 	offset int,
 ) ([]model.RecommendationItem, error) {
-	database, err := sql.Open("sqlite", "file:"+filepath.ToSlash(bundle.DatabasePath)+"?mode=ro")
-	if err != nil {
-		return nil, err
-	}
-	defer database.Close()
-
 	values := make([]string, 0, len(seeds))
 	parameters := make([]any, 0, len(seeds)*2+len(excludeRepoIDs)+2)
 	for _, seed := range seeds {
