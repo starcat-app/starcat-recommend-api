@@ -148,6 +148,8 @@ TrainedRecommendHandler -> TrainedProvider -> active ServingBundle SQLite
 
 `TrainedProvider` reuses a read-only SQLite connection pool per immutable model version. An active-version switch does not interrupt requests already using the previous bundle; the old pool entry is closed after its final reference is released, and all remaining connections are closed with the service.
 
+Single-repository v2 items preserve the raw ranking `score` and may additionally expose `display_score`, the global percentile calibrated by the immutable ServingBundle. Legacy bundles omit it safely. Multi-seed queries omit `display_score` because weighted combined scores do not follow the single-edge calibration distribution.
+
 Future providers should keep the response DTO stable:
 
 ```text
