@@ -184,6 +184,9 @@ func TestTrainedRecommendationsRevalidateByModelVersionETag(t *testing.T) {
 	if entityTag == "" {
 		t.Fatal("trained recommendation response must expose ETag")
 	}
+	if response.Header.Get("Cache-Control") != "private, no-cache" {
+		t.Fatalf("cache control = %q, want private, no-cache", response.Header.Get("Cache-Control"))
+	}
 	response.Body.Close()
 
 	response = requestWithHeaders(t, server.URL, http.MethodGet, path, trainedPublicKey, nil, "", map[string]string{
