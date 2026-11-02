@@ -9,7 +9,7 @@ Starcat 统一推荐后端：`/api/v1` 中转 SimRepo 非官方 Qdrant Recommend
 
 ## 技术栈
 
-- Go 1.25.0 · `net/http`
+- Go 1.26.10 · `net/http`
 - `modernc.org/sqlite`（metrics 与 model registry）
 - `github.com/starcat-app/starcat-api-kit` v0.3.0
 - `github.com/joho/godotenv`
@@ -35,7 +35,7 @@ make check                    # fmt-check + vet + test（PR 前）
 make docker-build
 ```
 
-CI（`.github/workflows/go.yml`）：gofmt · vet · docker build · test -race · build。
+CI（`.github/workflows/go.yml`）：gofmt · vet · govulncheck · docker build · test -race · build。
 
 Smoke test（README）：
 ```bash
