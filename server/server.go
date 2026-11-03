@@ -15,7 +15,9 @@ import (
 	"time"
 
 	kitenv "github.com/starcat-app/starcat-api-kit/env"
+	kitgithub "github.com/starcat-app/starcat-api-kit/github"
 	kitmetrics "github.com/starcat-app/starcat-api-kit/metrics"
+	"github.com/starcat-app/starcat-api-kit/tokenpool"
 	"github.com/starcat-app/starcat-recommend-api/internal/handler"
 	"github.com/starcat-app/starcat-recommend-api/internal/middleware"
 	"github.com/starcat-app/starcat-recommend-api/internal/provider"
@@ -24,24 +26,19 @@ import (
 )
 
 const (
-	defaultPort            = "5005"
-	defaultSimRepoEndpoint = "https://simrepo.dera.page/collections/repos/points/recommend"
-	defaultModelRegistry   = "./data/model-registry"
-	defaultMaxBundleBytes  = int64(512 << 20)
+	defaultPort           = "5005"
+	defaultModelRegistry  = "./data/model-registry"
+	defaultMaxBundleBytes = int64(512 << 20)
 )
 
 // Options 控制 recommend 服务装配。聚合网关可显式传入，单仓部署通常用 FromEnv。
 type Options struct {
 	Port                   string
 	APIKeys                []string
-	SimRepoAPIKey          string
-	SimRepoEndpoint        string
-	CacheTTLSuccess        time.Duration
-	CacheTTLEmpty          time.Duration
-	CacheTTLError          time.Duration
 	ModelRegistryDir       string
 	MetricsStoreFile       string
 	ModelPublishKeys       []string
+	GitHubTokens           []string
 	MaxBundleBytes         int64
 	SkipListenLogEndpoints bool
 }
@@ -50,7 +47,6 @@ type Options struct {
 type Service struct {
 	opts                 Options
 	handler              http.Handler
-	provider             provider.Provider
 	trainedProvider      *provider.TrainedProvider
 	registry             *serving.Registry
 	metrics              *kitmetrics.Collector
@@ -70,21 +66,13 @@ func FromEnv() (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	simRepoAPIKey, err := kitenv.LookupRequired("SIMREPO_API_KEY")
-	if err != nil {
-		return nil, err
-	}
 	opt := Options{
 		Port:             kitenv.OrDefault("PORT", defaultPort),
 		APIKeys:          apiKeys,
-		SimRepoAPIKey:    simRepoAPIKey,
-		SimRepoEndpoint:  kitenv.OrDefault("SIMREPO_ENDPOINT", defaultSimRepoEndpoint),
-		CacheTTLSuccess:  kitenv.DurationSeconds("CACHE_TTL_SUCCESS_SECONDS", 7*24*time.Hour),
-		CacheTTLEmpty:    kitenv.DurationSeconds("CACHE_TTL_EMPTY_SECONDS", time.Hour),
-		CacheTTLError:    kitenv.DurationSeconds("CACHE_TTL_ERROR_SECONDS", 10*time.Minute),
 		ModelRegistryDir: envOrDefault("MODEL_REGISTRY_DIR", defaultModelRegistry),
 		MetricsStoreFile: envOrDefault("METRICS_STORE_FILE", "./data/recommend-metrics.db"),
 		ModelPublishKeys: optionalListEnv("MODEL_PUBLISH_KEYS"),
+		GitHubTokens:     optionalListEnv("GITHUB_TOKENS"),
 		MaxBundleBytes:   int64Env("MAX_BUNDLE_BYTES", defaultMaxBundleBytes),
 	}
 	return New(opt)
@@ -98,23 +86,8 @@ func New(opt Options) (*Service, error) {
 	if len(opt.APIKeys) == 0 {
 		return nil, fmt.Errorf("APIKeys is required")
 	}
-	if strings.TrimSpace(opt.SimRepoAPIKey) == "" {
-		return nil, fmt.Errorf("SimRepoAPIKey is required")
-	}
-	if strings.TrimSpace(opt.SimRepoEndpoint) == "" {
-		opt.SimRepoEndpoint = defaultSimRepoEndpoint
-	}
 	if strings.TrimSpace(opt.MetricsStoreFile) == "" {
 		opt.MetricsStoreFile = ":memory:"
-	}
-	if opt.CacheTTLSuccess <= 0 {
-		opt.CacheTTLSuccess = 7 * 24 * time.Hour
-	}
-	if opt.CacheTTLEmpty <= 0 {
-		opt.CacheTTLEmpty = time.Hour
-	}
-	if opt.CacheTTLError <= 0 {
-		opt.CacheTTLError = 10 * time.Minute
 	}
 	registryDirectory := strings.TrimSpace(opt.ModelRegistryDir)
 	temporaryRegistryDirectory := ""
@@ -153,18 +126,22 @@ func New(opt Options) (*Service, error) {
 	}
 	metricsHandler := kitmetrics.NewHandler(Name(), metricsCollector.Store())
 
-	baseProvider := provider.NewSimRepoProvider(opt.SimRepoEndpoint, opt.SimRepoAPIKey, nil)
-	recommendProvider := provider.NewCachedProvider(
-		baseProvider,
-		opt.CacheTTLSuccess,
-		opt.CacheTTLEmpty,
-		opt.CacheTTLError,
-	)
-
 	authMW := middleware.NewBearerAuth(opt.APIKeys)
-	recommendHandler := handler.NewRecommendHandler(recommendProvider)
 	trainedProvider := provider.NewTrainedProvider(registry)
+	// 仅显式配置 PAT 时启用目录外网络补齐，测试/离线 New 不会意外联网。
+	// 即使 PAT 可读取私有仓库，Provider 仍必须先拒绝 Private，再生成任何内容向量。
+	if len(opt.GitHubTokens) > 0 {
+		trainedProvider.SetMetadataReader(kitgithub.NewClient(kitgithub.Options{
+			Pool:      tokenpool.New(opt.GitHubTokens),
+			UserAgent: "starcat-recommend-api", Timeout: 8 * time.Second,
+			HTTPClient: &http.Client{Timeout: 8 * time.Second,
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		}))
+	}
 	trainedHandler := handler.NewTrainedRecommendHandler(trainedProvider)
+	// 旧地址只做契约适配，不能继续访问第三方或用页面 TTL 隐藏模型切换。
+	// 下一次包含双渠道 v2 的 App 版本上线后移除此 handler/路由；见 TODO.md。
+	recommendHandler := handler.NewRecommendHandler(trainedProvider)
 	bundleHandler := handler.NewBundleHandler(registry, opt.MaxBundleBytes)
 
 	mux := http.NewServeMux()
@@ -173,7 +150,7 @@ func New(opt Options) (*Service, error) {
 	mux.Handle("GET /api/v1/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(recommendHandler.HandleRecommendations)))
 	mux.Handle("GET /api/v2/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleRecommendations)))
 	mux.Handle("POST /api/v2/recommendations/query", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleQuery)))
-	mux.Handle("GET /internal/stats", authMW.Wrap(handler.HandleOperationalStats(recommendProvider, registry)))
+	mux.Handle("GET /internal/stats", authMW.Wrap(handler.HandleOperationalStats(registry)))
 	mux.Handle("GET /internal/metrics/summary", authMW.Wrap(http.HandlerFunc(metricsHandler.HandleSummary)))
 	mux.Handle("GET /internal/metrics/timeseries", authMW.Wrap(http.HandlerFunc(metricsHandler.HandleTimeseries)))
 	mux.Handle("GET /internal/metrics/routes", authMW.Wrap(http.HandlerFunc(metricsHandler.HandleRoutes)))
@@ -200,7 +177,6 @@ func New(opt Options) (*Service, error) {
 	return &Service{
 		opts:                 opt,
 		handler:              metricsCollector.Wrap(middleware.CORS(mux)),
-		provider:             recommendProvider,
 		trainedProvider:      trainedProvider,
 		registry:             registry,
 		metrics:              metricsCollector,

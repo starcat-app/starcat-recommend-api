@@ -28,28 +28,22 @@ type MultiQuery struct {
 type TrainedProvider struct {
 	registry  *serving.Registry
 	databases *bundleDatabasePool
+	metadata  *contentMetadataCache
 }
 
 // NewTrainedProvider 创建自研推荐 Provider。
 func NewTrainedProvider(registry *serving.Registry) *TrainedProvider {
-	return &TrainedProvider{registry: registry, databases: newBundleDatabasePool()}
+	return &TrainedProvider{registry: registry, databases: newBundleDatabasePool(), metadata: newContentMetadataCache(nil)}
+}
+
+// SetMetadataReader 仅在服务装配时设置，不能在请求中替换凭据或上游地址。
+func (p *TrainedProvider) SetMetadataReader(reader RepositoryMetadataReader) {
+	p.metadata = newContentMetadataCache(reader)
 }
 
 // Close 释放 Provider 复用的所有 ServingBundle 数据库连接。
 func (p *TrainedProvider) Close() error {
 	return p.databases.close()
-}
-
-// ActiveModelVersion 返回当前原子激活的 ServingBundle 版本。
-//
-// handler 在执行 SQLite 查询前用它处理条件请求：客户端已缓存同一版本时直接返回
-// 304，避免为了确认版本未变化而读取完整推荐列表。
-func (p *TrainedProvider) ActiveModelVersion() (string, error) {
-	bundle, err := p.registry.Active()
-	if err != nil {
-		return "", err
-	}
-	return bundle.Version, nil
 }
 
 // Recommend 查询一个 seed repo 的预计算 Top-K。
@@ -67,6 +61,22 @@ func (p *TrainedProvider) Recommend(ctx context.Context, query Query) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
+	version := bundle.Version
+	fallback := false
+	if len(rows) == 0 && database.supportsContentIndex {
+		// offset 越界不能误判为无共现；只有整个 source 无预计算边才走内容路径。
+		var exists bool
+		if err := database.database.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM recommendations WHERE source_repo_id=?)", query.RepoID).Scan(&exists); err != nil {
+			return Result{}, err
+		}
+		if !exists {
+			rows, version, err = p.contentRecommendations(ctx, database, query, version)
+			if err != nil {
+				return Result{}, err
+			}
+			fallback = true
+		}
+	}
 	hasMore := len(rows) > query.Limit
 	if hasMore {
 		rows = rows[:query.Limit]
@@ -79,9 +89,9 @@ func (p *TrainedProvider) Recommend(ctx context.Context, query Query) (Result, e
 	return Result{
 		Response: model.RecommendationResponse{
 			Source:       "starcat_trained",
-			Fallback:     false,
+			Fallback:     fallback,
 			RepoID:       query.RepoID,
-			ModelVersion: bundle.Version,
+			ModelVersion: version,
 			Items:        rows,
 			HasMore:      hasMore,
 			NextOffset:   nextOffset,

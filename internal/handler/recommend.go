@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"strconv"
 
@@ -19,7 +20,8 @@ type RecommendationProvider interface {
 	Recommend(ctx context.Context, query provider.Query) (provider.Result, error)
 }
 
-// RecommendHandler 处理相似仓库推荐接口。
+// RecommendHandler 仅为尚未升级的客户端保留 v1 参数和响应契约。
+// 数据与 v2 共用自研 Provider；下一版本 App 上线后删除，不能重新加入第三方来源。
 type RecommendHandler struct {
 	provider RecommendationProvider
 }
@@ -53,8 +55,20 @@ func (h *RecommendHandler) HandleRecommendations(w http.ResponseWriter, r *http.
 		Offset: offset,
 	})
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", err.Error(), nil)
+		// 保留旧错误契约，但不把存储路径或公开元数据上游错误正文暴露给旧客户端。
+		writeError(w, http.StatusBadGateway, "UPSTREAM_UNAVAILABLE", "recommendations are unavailable", nil)
 		return
+	}
+	w.Header().Set("Cache-Control", "private, no-cache")
+	// 老版本仅用 score 展示匹配程度。优先映射全局校准分数，不能将原始共现权重
+	// 当成 0～1 的展示值；排序仍由自研 Provider 决定，不因适配而重新排序。
+	for index := range result.Response.Items {
+		item := &result.Response.Items[index]
+		score := item.Score
+		if item.DisplayScore != nil {
+			score = *item.DisplayScore
+		}
+		item.Score = math.Max(0, math.Min(1, score))
 	}
 
 	meta := &model.Meta{

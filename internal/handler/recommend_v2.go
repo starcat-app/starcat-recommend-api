@@ -13,7 +13,7 @@ import (
 	"github.com/starcat-app/starcat-recommend-api/internal/serving"
 )
 
-// TrainedRecommendHandler 为 /api/v2 提供自研 Bundle 查询，不改变 v1 SimRepo handler。
+// TrainedRecommendHandler 为当前客户端提供自研 Bundle 查询与版本重验证。
 type TrainedRecommendHandler struct {
 	provider *provider.TrainedProvider
 }
@@ -40,28 +40,22 @@ func (h *TrainedRecommendHandler) HandleRecommendations(w http.ResponseWriter, r
 		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "offset must be non-negative", nil)
 		return
 	}
-	activeVersion, err := h.provider.ActiveModelVersion()
-	if err != nil {
-		writeServingError(w, err)
-		return
-	}
-	entityTag := recommendationETag(activeVersion, repoID, limit, offset)
-	w.Header().Set("ETag", entityTag)
 	// no-cache 允许客户端保存响应，但每次复用前必须携带 ETag 向服务端确认模型版本。
 	// private 防止带鉴权的个性化调用被共享代理缓存。
 	w.Header().Set("Cache-Control", "private, no-cache")
-	if entityTagMatches(r.Header.Get("If-None-Match"), entityTag) {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
 	result, err := h.provider.Recommend(r.Context(), provider.Query{RepoID: repoID, Limit: limit, Offset: offset})
 	if err != nil {
 		writeServingError(w, err)
 		return
 	}
-	// 模型可能在版本检查和 SQLite 查询之间完成原子切换。响应 ETag 必须以本次实际
-	// 查询固定的 Bundle 为准，不能继续沿用检查时看到的旧版本。
-	w.Header().Set("ETag", recommendationETag(result.Response.ModelVersion, repoID, limit, offset))
+	// 响应标签以本次请求固定的 Bundle 和源内容快照为准。
+	entityTag := recommendationETag(result.Response.ModelVersion, repoID, limit, offset)
+	w.Header().Set("ETag", entityTag)
+	// 内容兜底的源 metadata 可在模型不变时更新，必须先固定内容快照身份再判断 304。
+	if entityTagMatches(r.Header.Get("If-None-Match"), entityTag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
 	meta := &model.Meta{PageSize: limit, Total: len(result.Response.Items), Source: result.Response.Source, CacheStatus: result.CacheStatus}
 	writeJSONWithMeta(w, result.Response, meta)
 }

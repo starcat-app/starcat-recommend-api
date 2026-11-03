@@ -31,6 +31,7 @@ type bundleDatabaseEntry struct {
 type bundleDatabaseHandle struct {
 	database             *sql.DB
 	supportsDisplayScore bool
+	supportsContentIndex bool
 }
 
 func newBundleDatabasePool() *bundleDatabasePool {
@@ -80,6 +81,11 @@ func (p *bundleDatabasePool) acquire(
 	handle := &bundleDatabaseHandle{
 		database:             database,
 		supportsDisplayScore: supportsDisplayScore,
+	}
+	handle.supportsContentIndex, err = tableHasColumn(ctx, database, "content_vocabulary", "idf")
+	if err != nil {
+		_ = database.Close()
+		return nil, nil, err
 	}
 	p.entries[bundle.Version] = &bundleDatabaseEntry{
 		path:       path,

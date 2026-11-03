@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,13 +28,13 @@ func TestRecommendHandlerSuccess(t *testing.T) {
 	mock := &mockRecommendationProvider{
 		result: provider.Result{
 			Response: model.RecommendationResponse{
-				Source: "simrepo",
+				Source: "starcat_trained",
 				RepoID: 41881900,
 				Items: []model.RecommendationItem{{
 					RepoID:   1,
 					FullName: "owner/repo",
 					Score:    0.9,
-					Source:   "simrepo",
+					Source:   "starcat_trained",
 				}},
 			},
 			CacheStatus: "fresh",
@@ -85,5 +86,30 @@ func TestRecommendHandlerUpstreamError(t *testing.T) {
 
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadGateway)
+	}
+	if bytes.Contains(rr.Body.Bytes(), []byte("boom")) {
+		t.Fatal("legacy response leaked internal error")
+	}
+}
+
+// TestLegacyScoresAreDisplayValues protects older apps that do not decode display_score.
+func TestLegacyScoresAreDisplayValues(t *testing.T) {
+	calibrated := 0.97
+	mock := &mockRecommendationProvider{result: provider.Result{
+		Response: model.RecommendationResponse{Items: []model.RecommendationItem{
+			{RepoID: 2, Score: 7.5, DisplayScore: &calibrated},
+			{RepoID: 3, Score: 0.63},
+		}},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/repos/1/recommendations", nil)
+	req.SetPathValue("repo_id", "1")
+	recorder := httptest.NewRecorder()
+	NewRecommendHandler(mock).HandleRecommendations(recorder, req)
+	var response model.Envelope[model.RecommendationResponse]
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.Items[0].Score != 0.97 || response.Data.Items[1].Score != 0.63 {
+		t.Fatal("legacy display scores must use calibration or content cosine")
 	}
 }

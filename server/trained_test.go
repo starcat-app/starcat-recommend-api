@@ -27,7 +27,6 @@ const (
 func TestTrainedBundlePublishAndV2Queries(t *testing.T) {
 	service, err := New(Options{
 		APIKeys:                []string{trainedPublicKey},
-		SimRepoAPIKey:          "unused-in-v2-test",
 		ModelRegistryDir:       filepath.Join(t.TempDir(), "registry"),
 		ModelPublishKeys:       []string{trainedAdminKey},
 		MaxBundleBytes:         10 << 20,
@@ -122,7 +121,6 @@ func TestBundleRejectsChecksumMismatchWithoutChangingActive(t *testing.T) {
 	registryDirectory := filepath.Join(t.TempDir(), "registry")
 	service, err := New(Options{
 		APIKeys:                []string{trainedPublicKey},
-		SimRepoAPIKey:          "unused-in-v2-test",
 		ModelRegistryDir:       registryDirectory,
 		ModelPublishKeys:       []string{trainedAdminKey},
 		MaxBundleBytes:         10 << 20,
@@ -159,7 +157,6 @@ func TestBundleRejectsChecksumMismatchWithoutChangingActive(t *testing.T) {
 func TestTrainedRecommendationsRevalidateByModelVersionETag(t *testing.T) {
 	service, err := New(Options{
 		APIKeys:                []string{trainedPublicKey},
-		SimRepoAPIKey:          "unused-in-v2-test",
 		ModelRegistryDir:       filepath.Join(t.TempDir(), "registry"),
 		ModelPublishKeys:       []string{trainedAdminKey},
 		MaxBundleBytes:         10 << 20,

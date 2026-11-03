@@ -59,7 +59,11 @@ brew install --cask starcat
 
 Starcat 相似仓库推荐后端。
 
-本服务是 Starcat 长期统一推荐入口。`/api/v1` 继续中转 SimRepo 的非官方 Qdrant Recommend API，保持现有客户端和第三方契约不变；`/api/v2` 只读 `starcat-recsys-trainer` 发布的自研 ServingBundle。客户端不直连 SimRepo，也不持有 SimRepo 或模型发布密钥。
+推荐接口统一读取 `starcat-recsys-trainer` 发布的自研 ServingBundle。`/api/v1` 暂时保留已发布客户端契约；当前 App Store / Direct 源码统一使用 `/api/v2`。不再使用第三方推荐 Provider 或密钥；客户端不持有模型发布密钥。
+
+**下一次包含双渠道 v2 切换的 Starcat App 版本上线之后，删除 v1 推荐兼容层**；仅部署后端不触发删除。具体清理范围见 [TODO.md](TODO.md)。
+
+部署与验收证据见[自研推荐切换与 v1 退役](docs/自研推荐切换与v1退役.md)。
 
 ## Endpoints
 
@@ -67,13 +71,17 @@ Starcat 相似仓库推荐后端。
 |---|---|---:|---|
 | `GET` | `/healthz` | No | Process health check |
 | `GET` | `/api/v1/ping` | Yes | Starcat client connectivity probe |
-| `GET` | `/api/v1/repos/{repo_id}/recommendations?limit=10&offset=0` | Yes | Similar repository recommendations |
+| `GET` | `/api/v1/repos/{repo_id}/recommendations?limit=10&offset=0` | Yes | 同一自研模型的临时旧客户端适配入口 |
 | `GET` | `/api/v2/repos/{repo_id}/recommendations?limit=10&offset=0` | Client key | 自研单仓推荐 |
 | `POST` | `/api/v2/recommendations/query` | Client key | 自研多 seed 推荐 |
 | `POST` | `/internal/v1/model-bundles/{model_version}?activate=true` | Publish key | Trainer 发布并激活 Bundle |
 | `GET` | `/internal/v1/model-bundles/active` | Publish key | 查询 active 模型 |
 
-v2 单仓接口会根据当前不可变模型版本与分页参数返回 `ETag`，并设置 `Cache-Control: private, no-cache`。客户端可通过 `If-None-Match` 重验证：模型未变化时直接返回 `304 Not Modified`，不查询或传输推荐列表；激活新模型后返回 `200` 及新版本数据。
+v2 单仓接口根据实际模型版本与分页参数返回 `ETag`，并设置 `Cache-Control: private, no-cache`。源仓库没有预计算推荐边时，包含已训练内容索引的 Bundle 可用公开名称、描述、topics 和语言检索近邻。源元数据摘要追加到 `model_version`，避免内容变化后错误返回 304 或混合不同修订的分页。条件请求在确定实际快照身份后返回 `304 Not Modified`。
+
+原有预计算推荐保持排序不变。内容补充采用 TF-IDF 余弦相似度，最低分数为 0.08，排除源仓库，不伪造全局校准的 `display_score`。这是词法检索，不是多语言 Embedding 模型。v2 多 seed 查询继续使用预计算边；本次内容补充仅用于单仓接口。
+
+配置 `GITHUB_TOKENS` 后，目录外源仓库通过数值 GitHub 仓库 ID 获取公开元数据；私有、禁用、归档、缺失及身份不符的项目在构造向量前拒绝。公开元数据缓存七天，不可用来源缓存十五分钟，最多 4,096 条；同 ID 请求合并、上游并发为二、请求间隔 720ms 且可取消、总预算八秒，失败退避一分钟。瞬时错误保留为可重试错误，不缓存成空推荐；不发送用户 Stars 列表或训练主体。
 
 鉴权后的 ping 响应包含服务标识，以及由发布 tag 注入的构建版本：
 
@@ -90,23 +98,19 @@ cp .env.example .env
 Required:
 
 - `API_KEYS`: comma-separated Bearer tokens accepted by Starcat clients.
-- `SIMREPO_API_KEY`: SimRepo Qdrant read-only key. Keep it server-side only.
 
 Optional:
 
 - `PORT`: defaults to `5005`.
-- `SIMREPO_ENDPOINT`: defaults to SimRepo's Qdrant recommend endpoint.
-- `CACHE_TTL_SUCCESS_SECONDS`: defaults to 7 days.
-- `CACHE_TTL_EMPTY_SECONDS`：默认 1 小时。
-- `CACHE_TTL_ERROR_SECONDS`: defaults to 10 minutes.
 - `MODEL_PUBLISH_KEYS`：逗号分隔的 Trainer 发布密钥；未配置时不注册内部发布路由。
 - `MODEL_REGISTRY_DIR`：不可变 Bundle Registry，默认 `./data/model-registry`。
 - `METRICS_STORE_FILE`：独立请求指标 SQLite，默认 `./data/recommend-metrics.db`。
 - `MAX_BUNDLE_BYTES`：压缩 Bundle 上限，默认 512 MiB。
+- `GITHUB_TOKENS`：可选服务端 PAT 池，用于解析目录外公开源仓库；聚合部署使用 `RECOMMEND_GITHUB_TOKENS`。未配置时，Bundle 目录内源仓库仍可使用内容索引。
 
 ## 运营与调用指标
 
-- `GET /internal/stats`：进程内 v1 缓存计数，以及当前 v2 ServingBundle 规模和元数据。
+- `GET /internal/stats`：当前自研 ServingBundle 规模和元数据；v1 入口标明 `source=starcat_trained`、`compatibility_only=true`、`cache_enabled=false`。
 - `GET /internal/metrics/{summary,timeseries,routes,status-codes}`：路由调用量、错误与延迟聚合。
 
 两类接口均使用 Service API Key；模型发布继续使用隔离的 Publish Key。指标不保存凭据或原始请求。
@@ -124,7 +128,7 @@ Smoke test:
 curl http://127.0.0.1:5005/healthz
 curl -H "Authorization: Bearer $API_KEY" http://127.0.0.1:5005/api/v1/ping
 curl -H "Authorization: Bearer $API_KEY" \
-  "http://127.0.0.1:5005/api/v1/repos/41881900/recommendations?limit=10&offset=0"
+  "http://127.0.0.1:5005/api/v2/repos/41881900/recommendations?limit=10&offset=0"
 curl -H "Authorization: Bearer $API_KEY" \
   "http://127.0.0.1:5005/api/v2/repos/41881900/recommendations?limit=10&offset=0"
 ```
@@ -152,14 +156,14 @@ go build ./...
 
 ## Provider Boundary
 
-当前两条 Provider 链互不覆盖：
+两个入口共用同一个 Provider：
 
 ```text
-RecommendHandler -> CachedProvider -> SimRepoProvider -> SimRepo Qdrant API
-TrainedRecommendHandler -> TrainedProvider -> active ServingBundle SQLite
+RecommendHandler（临时 v1 契约适配）-> TrainedProvider -> active ServingBundle SQLite
+TrainedRecommendHandler（v2）    -> TrainedProvider -> active ServingBundle SQLite
 ```
 
-`CachedProvider` 最多保留 10000 个 `repoID:limit:offset` 组合键。读取时删除过期项；容量已满时淘汰最早到期的条目。
+不再维护隐藏模型切换的独立 v1 页面 TTL 缓存。v1 保留原参数上限、分页和错误契约，并将校准分数适配到旧客户端的 0～1 展示字段，不改变排序。公开元数据缓存与客户端 v2 版本重验证继续保留。
 
 自研响应复用现有推荐卡片字段，并额外返回 `model_version` 与 `signals`。训练、Collection 原始快照和在线查询保持隔离，Recommend API 不读取 `participant_id`。
 
