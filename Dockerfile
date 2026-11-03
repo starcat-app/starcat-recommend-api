@@ -1,7 +1,9 @@
 # ===========================================
 # Stage 1: 构建阶段
 # ===========================================
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
+
+ENV GOTOOLCHAIN=local
 
 ARG VERSION=0.0.0-dev
 
