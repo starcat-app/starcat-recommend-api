@@ -36,4 +36,6 @@ type MultiRecommendationResponse struct {
 	Fallback     bool                 `json:"fallback"`
 	ModelVersion string               `json:"model_version"`
 	Items        []RecommendationItem `json:"items"`
+	HasMore      bool                 `json:"has_more"`
+	NextCursor   string               `json:"next_cursor,omitempty"`
 }

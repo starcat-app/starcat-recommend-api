@@ -81,6 +81,16 @@ The v2 single-repository endpoint returns an `ETag` derived from the effective m
 
 Existing precomputed recommendations retain their ordering. Content fallback uses TF-IDF cosine similarity with a minimum score of 0.08, excludes the source, and does not fabricate globally calibrated `display_score` values. This is lexical retrieval, not a multilingual embedding model. Multi-seed v2 queries continue to use precomputed edges; this fallback applies to single-repository queries.
 
+Multi-seed queries support cursor pagination. Start without a cursor:
+
+```json
+{"positive_repo_ids":[123,456],"limit":100}
+```
+
+The response data contains `has_more` and, when another page exists, `next_cursor`. Send that value as `cursor` in the next POST, retaining the same positive seeds, negative seeds, exclusion set and limit. Set order and duplicate IDs do not change the query identity. Each page contains at most 100 items and follows the deterministic score, best-rank and repository-ID ordering.
+
+Cursors bind the active model and normalized query, including the ordering policy. Invalid or mismatched cursors return `400 INVALID_CURSOR`; an active-model change returns `409 CURSOR_EXPIRED`, requiring a fresh query without a cursor. Cursor pagination stores no user session, recommendation history or full client Star list on the server. These source changes require deployment before clients can fetch subsequent pages.
+
 With `GITHUB_TOKENS` configured, an out-of-catalog source is resolved by numeric GitHub repository ID. Private, disabled, archived, missing and mismatched repositories are rejected before vector construction. Public source metadata is cached for seven days (unavailable sources: 15 minutes), bounded to 4,096 entries, with same-ID request coalescing, two upstream slots, a cancellable 720 ms request interval, an eight-second budget and one-minute failure backoff. Transient failures remain retryable errors, not cached empty recommendations. No user Star lists or training subjects enter this path.
 
 The authenticated ping response includes the service identity and the build version injected from the release tag:

@@ -19,6 +19,7 @@ type MultiQuery struct {
 	NegativeRepoIDs []int64
 	ExcludeRepoIDs  []int64
 	Limit           int
+	Cursor          string
 }
 
 // TrainedProvider 只读 Trainer 生成的 SQLite ServingBundle。
@@ -106,6 +107,10 @@ func (p *TrainedProvider) RecommendMany(ctx context.Context, query MultiQuery) (
 	if err != nil {
 		return model.MultiRecommendationResponse{}, err
 	}
+	offset, err := decodeQueryCursor(query.Cursor, query, bundle.Version)
+	if err != nil {
+		return model.MultiRecommendationResponse{}, err
+	}
 	database, release, err := p.databases.acquire(ctx, bundle)
 	if err != nil {
 		return model.MultiRecommendationResponse{}, err
@@ -121,15 +126,24 @@ func (p *TrainedProvider) RecommendMany(ctx context.Context, query MultiQuery) (
 	excluded := append([]int64{}, query.ExcludeRepoIDs...)
 	excluded = append(excluded, query.PositiveRepoIDs...)
 	excluded = append(excluded, query.NegativeRepoIDs...)
-	items, err := queryRows(ctx, database, seeds, excluded, query.Limit, 0)
+	// 多取一条判断后续页，沿用完整排序，不能把每一页独立重新排成一批
+	items, err := queryRows(ctx, database, seeds, excluded, query.Limit+1, offset)
 	if err != nil {
 		return model.MultiRecommendationResponse{}, err
+	}
+	hasMore := len(items) > query.Limit
+	nextCursor := ""
+	if hasMore {
+		items = items[:query.Limit]
+		nextCursor = encodeQueryCursor(query, bundle.Version, offset+len(items))
 	}
 	return model.MultiRecommendationResponse{
 		Source:       "starcat_trained",
 		Fallback:     false,
 		ModelVersion: bundle.Version,
 		Items:        items,
+		HasMore:      hasMore,
+		NextCursor:   nextCursor,
 	}, nil
 }
 

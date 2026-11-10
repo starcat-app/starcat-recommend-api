@@ -83,6 +83,7 @@ type recommendationQueryRequest struct {
 	NegativeRepoIDs []int64 `json:"negative_repo_ids"`
 	ExcludeRepoIDs  []int64 `json:"exclude_repo_ids"`
 	Limit           int     `json:"limit"`
+	Cursor          string  `json:"cursor,omitempty"`
 }
 
 // HandleQuery 处理多 positive/negative seed 的匿名推荐请求。
@@ -117,6 +118,7 @@ func (h *TrainedRecommendHandler) HandleQuery(w http.ResponseWriter, r *http.Req
 		NegativeRepoIDs: request.NegativeRepoIDs,
 		ExcludeRepoIDs:  request.ExcludeRepoIDs,
 		Limit:           request.Limit,
+		Cursor:          request.Cursor,
 	})
 	if err != nil {
 		writeServingError(w, err)
@@ -127,6 +129,14 @@ func (h *TrainedRecommendHandler) HandleQuery(w http.ResponseWriter, r *http.Req
 }
 
 func writeServingError(w http.ResponseWriter, err error) {
+	if errors.Is(err, provider.ErrInvalidQueryCursor) {
+		writeError(w, http.StatusBadRequest, "INVALID_CURSOR", "cursor does not match this recommendation query", nil)
+		return
+	}
+	if errors.Is(err, provider.ErrExpiredQueryCursor) {
+		writeError(w, http.StatusConflict, "CURSOR_EXPIRED", "recommendation model changed; restart from the first page", nil)
+		return
+	}
 	if errors.Is(err, serving.ErrNoActiveBundle) {
 		writeError(w, http.StatusServiceUnavailable, "MODEL_UNAVAILABLE", "no active recommendation model", nil)
 		return
