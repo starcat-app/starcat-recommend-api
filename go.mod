@@ -4,7 +4,7 @@ go 1.26.10
 
 require (
 	github.com/joho/godotenv v1.5.1
-	github.com/starcat-app/starcat-api-kit v0.3.0
+	github.com/starcat-app/starcat-api-kit v0.3.1-0.20261103143922-ce1d7d982058
 	modernc.org/sqlite v1.52.0
 )
 
