@@ -45,6 +45,9 @@ func TestMultiSeedCursorPagination(t *testing.T) {
 			t.Fatalf("duplicate or seed leaked across pages: %d", item.RepoID)
 		}
 		seen[item.RepoID] = true
+		if len(item.MatchedSeeds) == 0 || item.MatchedSeeds[0].RepoID != 1 {
+			t.Fatalf("missing actual source on paginated item %d: %+v", item.RepoID, item.MatchedSeeds)
+		}
 	}
 	if first.Items[0].RepoID != 2 || second.Items[0].RepoID != 108 {
 		t.Fatal("paging must preserve score/rank/id ordering")
@@ -86,6 +89,42 @@ func TestMultiSeedCursorPagination(t *testing.T) {
 	}
 }
 
+// TestRecommendationSourceEvidence 证据只能来自当前查询的正向边，并保持贡献顺序与三项上限。
+func TestRecommendationSourceEvidence(t *testing.T) {
+	service, err := New(Options{
+		APIKeys: []string{trainedPublicKey}, ModelPublishKeys: []string{trainedAdminKey},
+		ModelRegistryDir: filepath.Join(t.TempDir(), "registry"),
+		MaxBundleBytes:   10 << 20, SkipListenLogEndpoints: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.Handler())
+	t.Cleanup(func() { server.Close(); _ = service.Close() })
+	publishQueryPagingBundle(t, server.URL, "evidence-v1")
+
+	page := queryPagingPage(t, server.URL, map[string]any{
+		"positive_repo_ids": []int64{8, 7, 6, 5, 4, 1}, "limit": 10,
+	})
+	seeds := page.Items[0].MatchedSeeds
+	if page.Items[0].RepoID != 2 || len(seeds) != 3 ||
+		seeds[0].RepoID != 1 || seeds[1].RepoID != 4 || seeds[2].RepoID != 5 {
+		t.Fatalf("wrong contributing source order or cap: %+v", seeds)
+	}
+	if seeds[0].FullName != "owner/one" || seeds[1].Description != "four" ||
+		len(seeds[0].Reasons) == 0 {
+		t.Fatalf("source snapshot was not preserved: %+v", seeds)
+	}
+	page = queryPagingPage(t, server.URL, map[string]any{
+		"positive_repo_ids": []int64{1}, "negative_repo_ids": []int64{4}, "limit": 10,
+	})
+	for _, item := range page.Items {
+		if len(item.MatchedSeeds) != 1 || item.MatchedSeeds[0].RepoID != 1 {
+			t.Fatalf("negative or unrelated source leaked: %+v", item.MatchedSeeds)
+		}
+	}
+}
+
 // queryPagingPage 保留鉴权、envelope 与真实路由，防止测试绕过 HTTP 参数校验
 func queryPagingPage(t *testing.T, baseURL string, query map[string]any) model.MultiRecommendationResponse {
 	t.Helper()
@@ -107,6 +146,16 @@ func publishQueryPagingBundle(t *testing.T, baseURL, version string) {
 	database, err := sql.Open("sqlite", filepath.Join(directory, "recommendations.sqlite"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	for id := 5; id <= 8; id++ {
+		if _, err := database.Exec(`INSERT INTO repositories VALUES (?, ?, '', '[]', 'Go', '', 10, 0, NULL)`,
+			id, fmt.Sprintf("owner/source%d", id)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Exec(`INSERT INTO recommendations VALUES (?, 2, ?, 0.2, 1, 'costar', '{}')`,
+			id, 1.2-float64(id)*0.1); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for id := 10; id < 130; id++ {
 		if _, err := database.Exec(`INSERT INTO repositories VALUES (?, ?, '', '[]', 'Go', '', 10, 0, NULL)`, id, fmt.Sprintf("owner/project%d", id)); err != nil {

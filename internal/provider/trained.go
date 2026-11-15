@@ -271,7 +271,71 @@ LIMIT ? OFFSET ?`, strings.Join(values, ","), displayScoreExpression, exclusion)
 		item.Reasons = reasonsFor(modelName, item.Signals)
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 先释放结果集再查询证据，避免单连接 Bundle 池等待自己；两次查询固定同一只读模型。
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := attachMatchedSeeds(ctx, database, seeds, items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+// attachMatchedSeeds 一次批量读取当前页的真实正向来源，不增加逐项目查询，也不改变候选排序。
+// 聚合分数可能包含负 seed，原 MIN(signals) 不能代表来源；此处从原始边独立恢复证据。
+func attachMatchedSeeds(ctx context.Context, database *bundleDatabaseHandle, seeds []weightedSeed, items []model.RecommendationItem) error {
+	positiveIDs := make([]int64, 0, len(seeds))
+	for _, seed := range seeds {
+		if seed.weight > 0 {
+			positiveIDs = append(positiveIDs, seed.repoID)
+		}
+	}
+	positiveIDs = uniquePositiveIDs(positiveIDs)
+	if len(positiveIDs) == 0 || len(items) == 0 {
+		return nil
+	}
+	parameters := make([]any, 0, len(positiveIDs)+len(items))
+	for _, id := range positiveIDs {
+		parameters = append(parameters, id)
+	}
+	indexByID := make(map[int64]int, len(items))
+	for index, item := range items {
+		parameters = append(parameters, item.RepoID)
+		indexByID[item.RepoID] = index
+	}
+	placeholders := func(count int) string { return strings.TrimSuffix(strings.Repeat("?,", count), ",") }
+	query := fmt.Sprintf(`
+SELECT r.target_repo_id, r.source_repo_id, p.full_name,
+       COALESCE(p.description, ''), COALESCE(p.primary_language, ''), r.model, r.signals
+FROM recommendations r
+JOIN repositories p ON p.repo_id = r.source_repo_id
+WHERE r.source_repo_id IN (%s) AND r.target_repo_id IN (%s) AND r.score > 0
+ORDER BY r.target_repo_id, r.score DESC, r.rank, r.source_repo_id`,
+		placeholders(len(positiveIDs)), placeholders(len(items)))
+	rows, err := database.database.QueryContext(ctx, query, parameters...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var targetID int64
+		var seed model.RecommendationSeed
+		var modelName, signals string
+		if err := rows.Scan(&targetID, &seed.RepoID, &seed.FullName, &seed.Description,
+			&seed.Language, &modelName, &signals); err != nil {
+			return err
+		}
+		index := indexByID[targetID]
+		if len(items[index].MatchedSeeds) >= 3 {
+			continue
+		}
+		seed.Reasons = reasonsFor(modelName, parseSignals(signals))
+		items[index].MatchedSeeds = append(items[index].MatchedSeeds, seed)
+	}
+	return rows.Err()
 }
 
 func uniquePositiveIDs(ids []int64) []int64 {
