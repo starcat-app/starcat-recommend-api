@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Security
+- Build with Go 1.26.11 to include the latest Go 1.26 security fixes.
 - Require Go 1.26.10 for patched HTTP/TLS and certificate validation, and use the same toolchain in CI and Docker builds.
 - Upgrade `golang.org/x/sys` to v0.44.0, removing the known Windows-only vulnerability record from the dependency graph.
 - Check known reachable Go vulnerabilities in CI with govulncheck v1.9.0.
