@@ -147,6 +147,7 @@ func New(opt Options) (*Service, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
 	mux.Handle("GET /api/v1/ping", authMW.Wrap(handler.HandlePingV1(version.Service, version.Version)))
+	mux.Handle("GET /api/v2/version", authMW.Wrap(handler.HandleVersion(registry)))
 	mux.Handle("GET /api/v1/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(recommendHandler.HandleRecommendations)))
 	mux.Handle("GET /api/v2/repos/{repo_id}/recommendations", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleRecommendations)))
 	mux.Handle("POST /api/v2/recommendations/query", authMW.Wrap(http.HandlerFunc(trainedHandler.HandleQuery)))
@@ -164,6 +165,7 @@ func New(opt Options) (*Service, error) {
 	if !opt.SkipListenLogEndpoints {
 		log.Printf("starcat-recommend-api %s endpoints ready", version.Version)
 		log.Printf("  GET /api/v1/ping")
+		log.Printf("  GET /api/v2/version")
 		log.Printf("  GET /api/v1/repos/{repo_id}/recommendations")
 		log.Printf("  GET /api/v2/repos/{repo_id}/recommendations")
 		log.Printf("  POST /api/v2/recommendations/query")

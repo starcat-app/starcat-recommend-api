@@ -48,11 +48,19 @@ var (
 
 // Manifest 是 Recommend API 读取的 Bundle 最小发布元数据。
 type Manifest struct {
-	SchemaVersion int             `json:"schema_version"`
-	ModelVersion  string          `json:"model_version"`
-	SelectedModel string          `json:"selected_model"`
-	CreatedAt     string          `json:"created_at"`
-	Metrics       json.RawMessage `json:"metrics,omitempty"`
+	SchemaVersion          int                 `json:"schema_version"`
+	ModelVersion           string              `json:"model_version"`
+	SelectedModel          string              `json:"selected_model"`
+	CreatedAt              string              `json:"created_at"`
+	Metrics                json.RawMessage     `json:"metrics,omitempty"`
+	MetricsScope           *string             `json:"metrics_scope"`
+	Training               *TrainingMetadata   `json:"training"`
+	Evaluation             *EvaluationMetadata `json:"evaluation"`
+	RawWatermark           *string             `json:"raw_watermark"`
+	GitCommit              *string             `json:"git_commit"`
+	ConfigHash             *string             `json:"config_hash"`
+	EvaluationChecksum     *string             `json:"evaluation_checksum"`
+	EvaluatedModelChecksum *string             `json:"evaluated_model_checksum"`
 }
 
 // ActiveBundle 是一次查询固定使用的只读版本快照。
@@ -65,6 +73,7 @@ type ActiveBundle struct {
 
 // OperationalStats exposes active model scale and manifest metadata without filesystem paths.
 type OperationalStats struct {
+	manifest            Manifest
 	Active              bool            `json:"active"`
 	ModelVersion        string          `json:"model_version,omitempty"`
 	SelectedModel       string          `json:"selected_model,omitempty"`
@@ -138,7 +147,7 @@ func (r *Registry) Stats() (OperationalStats, error) {
 	defer database.Close()
 	result := OperationalStats{Active: true, ModelVersion: bundle.Version,
 		SelectedModel: bundle.Manifest.SelectedModel, CreatedAt: bundle.Manifest.CreatedAt,
-		Metrics: bundle.Manifest.Metrics}
+		Metrics: bundle.Manifest.Metrics, manifest: bundle.Manifest}
 	if err := database.QueryRow("SELECT COUNT(*) FROM repositories").Scan(&result.Repositories); err != nil {
 		return OperationalStats{}, err
 	}
