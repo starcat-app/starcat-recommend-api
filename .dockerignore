@@ -1,6 +1,9 @@
 .git
 .github
 .env
+.env.*
+!.env.example
+data/
 bin
 coverage.out
 coverage.html

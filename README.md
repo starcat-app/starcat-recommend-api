@@ -59,6 +59,15 @@ brew install --cask starcat
 
 Backend service for Starcat similar-repository recommendations.
 
+Run it locally with a pretrained model: [self-hosting guide](docs/SELF_HOSTING.md)
+([中文](docs/SELF_HOSTING-ZH.md)). It covers Docker Compose, direct Go deployment,
+verified Release downloads, activation and `/api/v2/version`. No training data or
+Python runtime is required for serving.
+
+[Model training and data downloads](https://github.com/starcat-app/starcat-recsys-trainer) ·
+[Model results](https://github.com/starcat-app/starcat-recsys-trainer/blob/main/docs/MODEL_HISTORY.md) ·
+[Pretrained model Releases](https://github.com/starcat-app/starcat-recsys-trainer/releases)
+
 Both recommendation routes read immutable ServingBundles published by `starcat-recsys-trainer`. `/api/v1` temporarily preserves the released client contract; current App Store and Direct source code uses `/api/v2`. No third-party recommendation provider or key is used. Clients never hold the model publishing key.
 
 Remove the v1 recommendation adapter **after the next Starcat App version containing the dual-channel v2 switch is released**, not after a backend deployment alone. The exact removal scope is recorded in [TODO.md](TODO.md).
@@ -71,6 +80,7 @@ Cutover evidence and removal checklist: [self-trained recommendation cutover](do
 |---|---|---:|---|
 | `GET` | `/healthz` | No | Process health check |
 | `GET` | `/api/v1/ping` | Yes | Starcat client connectivity probe |
+| `GET` | `/api/v2/version` | Client key | Build version, active model, training provenance and evaluation |
 | `GET` | `/api/v1/repos/{repo_id}/recommendations?limit=10&offset=0` | Yes | Temporary legacy adapter over the same trained model |
 | `GET` | `/api/v2/repos/{repo_id}/recommendations?limit=10&offset=0` | Client key | Self-trained single-repository recommendations |
 | `POST` | `/api/v2/recommendations/query` | Client key | Self-trained multi-seed recommendations |
@@ -98,6 +108,11 @@ The authenticated ping response includes the service identity and the build vers
 ```json
 {"schema_version":1,"data":{"service":"recommend","version":"1.2.3","ok":true}}
 ```
+
+The version endpoint returns the actual active bundle and its size from one snapshot.
+An empty registry returns `model: null`; missing historical training fields remain
+`null`. `metrics_scope=pre_refit` describes the evaluated candidate before final refit.
+See [response semantics and deployment checks](docs/SELF_HOSTING.md#verify-the-active-model).
 
 ## Environment
 
@@ -128,7 +143,7 @@ Both endpoints use the Service API Key. Bundle publication remains on the isolat
 ## Local Development
 
 ```bash
-go mod tidy
+go mod download
 go run ./cmd/server
 ```
 

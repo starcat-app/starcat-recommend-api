@@ -1,0 +1,19 @@
+# 本地独立部署；数据卷保留不可变模型和指标，端口默认只暴露给本机。
+services:
+  recommend:
+    build: .
+    ports:
+      - "127.0.0.1:${PORT:-5005}:5005"
+    environment:
+      PORT: "5005"
+      API_KEYS: ${API_KEYS:?Set API_KEYS in .env}
+      MODEL_PUBLISH_KEYS: ${MODEL_PUBLISH_KEYS:?Set a separate MODEL_PUBLISH_KEYS in .env}
+      MODEL_REGISTRY_DIR: /app/data/model-registry
+      METRICS_STORE_FILE: /app/data/recommend-metrics.db
+      GITHUB_TOKENS: ${GITHUB_TOKENS:-}
+    volumes:
+      - recommend-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  recommend-data:

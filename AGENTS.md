@@ -11,7 +11,7 @@ Starcat 统一自研推荐后端：v1 推荐兼容入口与 v2 共用 `starcat-r
 
 - Go 1.26.11 · `net/http`
 - `modernc.org/sqlite`（metrics 与 model registry）
-- `github.com/starcat-app/starcat-api-kit` v0.3.0
+- `github.com/starcat-app/starcat-api-kit`（版本以 `go.mod` 为准，独立构建无需同级 checkout）
 - `github.com/joho/godotenv`
 
 ## 关键目录
@@ -51,6 +51,8 @@ curl -H "Authorization: Bearer $API_KEY" http://127.0.0.1:5005/api/v1/ping
 - **v2 ETag**：单仓推荐根据模型版本与分页返回 `ETag`；支持 `If-None-Match` → 304。
 - **内部端点**：`POST /internal/v1/model-bundles/{version}` 用 `MODEL_PUBLISH_KEYS`；`GET /internal/stats`、`/internal/metrics/*` 用 `API_KEYS`。
 - **响应契约**：envelope + Bearer 鉴权；`/healthz` 公开。
+- **模型版本**：`GET /api/v2/version` 使用查询 Key，固定同一活动快照返回模型与规模，
+  历史未知训练字段保留 `null`。本地部署和预训练模型安装见 `docs/SELF_HOSTING-ZH.md`。
 - 改 provider 逻辑后跑 `make check`，注意 `server/trained_test.go` 等集成测试。
 
 ## 安全与数据边界

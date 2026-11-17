@@ -59,6 +59,14 @@ brew install --cask starcat
 
 Starcat 相似仓库推荐后端。
 
+本地直接使用已训练模型：[部署指南](docs/SELF_HOSTING-ZH.md)
+（[English](docs/SELF_HOSTING.md)）。包含 Docker Compose、Go 直接运行、
+Release 校验下载、模型激活和 `/api/v2/version` 查询；服务端不需要训练数据或 Python。
+
+[训练与数据下载](https://github.com/starcat-app/starcat-recsys-trainer/blob/main/README-ZH.md) ·
+[模型成果](https://github.com/starcat-app/starcat-recsys-trainer/blob/main/docs/MODEL_HISTORY.md) ·
+[预训练模型 Releases](https://github.com/starcat-app/starcat-recsys-trainer/releases)
+
 推荐接口统一读取 `starcat-recsys-trainer` 发布的自研 ServingBundle。`/api/v1` 暂时保留已发布客户端契约；当前 App Store / Direct 源码统一使用 `/api/v2`。不再使用第三方推荐 Provider 或密钥；客户端不持有模型发布密钥。
 
 **下一次包含双渠道 v2 切换的 Starcat App 版本上线之后，删除 v1 推荐兼容层**；仅部署后端不触发删除。具体清理范围见 [TODO.md](TODO.md)。
@@ -71,6 +79,7 @@ Starcat 相似仓库推荐后端。
 |---|---|---:|---|
 | `GET` | `/healthz` | No | Process health check |
 | `GET` | `/api/v1/ping` | Yes | Starcat client connectivity probe |
+| `GET` | `/api/v2/version` | Client key | 构建版本、活动模型、训练信息与评估成果 |
 | `GET` | `/api/v1/repos/{repo_id}/recommendations?limit=10&offset=0` | Yes | 同一自研模型的临时旧客户端适配入口 |
 | `GET` | `/api/v2/repos/{repo_id}/recommendations?limit=10&offset=0` | Client key | 自研单仓推荐 |
 | `POST` | `/api/v2/recommendations/query` | Client key | 自研多 seed 推荐 |
@@ -88,6 +97,10 @@ v2 单仓接口根据实际模型版本与分页参数返回 `ETag`，并设置 
 ```json
 {"schema_version":1,"data":{"service":"recommend","version":"1.2.3","ok":true}}
 ```
+
+version 接口从同一快照读取真实活动模型及规模。空 Registry 返回 `model: null`，
+旧模型未记录的训练字段返回 `null`；`metrics_scope=pre_refit` 表示最终重训前的候选
+指标。[完整语义与验证步骤](docs/SELF_HOSTING-ZH.md#检查版本与推荐)。
 
 ## Environment
 
@@ -118,7 +131,7 @@ Optional:
 ## Local Development
 
 ```bash
-go mod tidy
+go mod download
 go run ./cmd/server
 ```
 
@@ -127,8 +140,6 @@ Smoke test:
 ```bash
 curl http://127.0.0.1:5005/healthz
 curl -H "Authorization: Bearer $API_KEY" http://127.0.0.1:5005/api/v1/ping
-curl -H "Authorization: Bearer $API_KEY" \
-  "http://127.0.0.1:5005/api/v2/repos/41881900/recommendations?limit=10&offset=0"
 curl -H "Authorization: Bearer $API_KEY" \
   "http://127.0.0.1:5005/api/v2/repos/41881900/recommendations?limit=10&offset=0"
 ```

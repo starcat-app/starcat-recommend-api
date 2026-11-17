@@ -32,6 +32,8 @@ RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 COPY --from=builder /app/bin/server /app/server
 
+RUN mkdir -p /app/data && chown app:app /app/data
+
 USER app
 
 EXPOSE 5005
